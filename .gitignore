@@ -64,6 +64,7 @@ temp_*.xlsx
 temp_*.csv
 ListingPilot_*.xlsx
 ListingPilot_*.zip
+/*.xlsx
 *.log
 
 # --- OS & Editor Cache ---
