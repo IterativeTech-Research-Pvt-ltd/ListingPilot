@@ -1,0 +1,684 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>ListingPilot Demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: app shell — top bar, step rail, one working panel per step; stacks to a single column on phones */
+:root{
+  --bg:#f3f5f2; --surface:#ffffff; --sunk:#eaeee9; --ink:#17201d; --muted:#5b6964; --line:#dbe1dc;
+  --accent:#0d6b58; --accent-ink:#ffffff; --accent-soft:#dcefe9; --mark:#d98f23; --mark-soft:#fbefdc;
+  --good:#2b8048; --good-soft:#e1f2e6; --warn:#a8680f; --warn-soft:#fbefd9; --bad:#b83a2c; --bad-soft:#f9e3e0;
+  --wa-bg:#e9e3d9; --wa-in:#ffffff; --wa-out:#d8f5c8; --wa-bar:#0f5c4c;
+  --f-display:"Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --f-body:"IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --f-mono:"IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f1412; --surface:#171e1b; --sunk:#121816; --ink:#e4ebe7; --muted:#9aa9a3; --line:#29342f;
+  --accent:#3db497; --accent-ink:#06120e; --accent-soft:#163a31; --mark:#f0b04f; --mark-soft:#3a2c14;
+  --good:#5cc27a; --good-soft:#163222; --warn:#e3a648; --warn-soft:#382a12; --bad:#ef6e5e; --bad-soft:#3d1d19;
+  --wa-bg:#0d1714; --wa-in:#1f2a26; --wa-out:#11493b; --wa-bar:#1b3a32; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f1412; --surface:#171e1b; --sunk:#121816; --ink:#e4ebe7; --muted:#9aa9a3; --line:#29342f;
+  --accent:#3db497; --accent-ink:#06120e; --accent-soft:#163a31; --mark:#f0b04f; --mark-soft:#3a2c14;
+  --good:#5cc27a; --good-soft:#163222; --warn:#e3a648; --warn-soft:#382a12; --bad:#ef6e5e; --bad-soft:#3d1d19;
+  --wa-bg:#0d1714; --wa-in:#1f2a26; --wa-out:#11493b; --wa-bar:#1b3a32; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:15px/1.55 var(--f-body);padding-inline:16px;padding-block:0 48px}
+.wrap{max-width:1120px;margin:0 auto}
+h1,h2,h3{font-family:var(--f-display);text-wrap:balance;margin:0;line-height:1.15}
+h2{font-size:1.6rem}
+h3{font-size:1.05rem}
+p{margin:0}
+.mono{font-family:var(--f-mono);font-size:.86em}
+.muted{color:var(--muted)}
+button{font:inherit;cursor:pointer}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* top bar */
+.top{display:flex;flex-wrap:wrap;align-items:center;gap:12px 20px;padding-block:20px 16px}
+.brand{display:flex;align-items:baseline;gap:10px}
+.brand b{font-family:var(--f-display);font-size:1.5rem;letter-spacing:-.01em}
+.brand span{color:var(--muted);font-size:.85rem}
+.demo-pill{margin-left:auto;font-size:.8rem;padding:5px 10px;border-radius:999px;background:var(--mark-soft);color:var(--warn);border:1px solid color-mix(in srgb,var(--mark) 40%,transparent)}
+
+/* step rail */
+.steps{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;border-bottom:1px solid var(--line);margin-bottom:24px}
+.steps button{flex:none;display:flex;align-items:center;gap:8px;border:0;background:none;color:var(--muted);padding:10px 12px;border-bottom:2px solid transparent;margin-bottom:-5px;font-weight:500}
+.steps button .n{font-family:var(--f-mono);font-size:.75rem;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;border:1px solid var(--line)}
+.steps button.on{color:var(--ink);border-bottom-color:var(--accent)}
+.steps button.on .n{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.steps button.done .n{background:var(--accent-soft);color:var(--accent);border-color:transparent}
+
+.head{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px 24px;margin-bottom:20px}
+.head .lead{max-width:62ch;color:var(--muted);margin-top:6px}
+.head .actions{margin-left:auto;display:flex;flex-wrap:wrap;gap:8px}
+.btn{border:1px solid var(--line);background:var(--surface);color:var(--ink);padding:9px 14px;border-radius:8px;font-weight:500}
+.btn:hover{border-color:var(--muted)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn.small{padding:5px 10px;font-size:.85rem}
+
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:10px}
+.tablewrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:.75rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600;background:var(--sunk)}
+tr:last-child td{border-bottom:0}
+td.num,th.num{text-align:right}
+
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:.78rem;font-weight:500;padding:2px 9px;border-radius:999px;white-space:nowrap}
+.chip::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.c-good{background:var(--good-soft);color:var(--good)}
+.c-warn{background:var(--warn-soft);color:var(--warn)}
+.c-bad{background:var(--bad-soft);color:var(--bad)}
+.c-idle{background:var(--sunk);color:var(--muted)}
+.c-acc{background:var(--accent-soft);color:var(--accent)}
+
+.meter{display:flex;align-items:center;gap:8px;min-width:120px}
+.meter i{flex:1;height:6px;border-radius:3px;background:var(--sunk);overflow:hidden;display:block}
+.meter i b{display:block;height:100%;background:var(--accent)}
+
+/* AI listings view */
+.split{display:grid;grid-template-columns:240px minmax(0,1fr);gap:20px}
+.skulist{display:flex;flex-direction:column;gap:4px}
+.skulist button{display:flex;flex-direction:column;align-items:flex-start;gap:4px;text-align:left;border:1px solid transparent;background:none;color:var(--ink);padding:10px 12px;border-radius:8px}
+.skulist button:hover{background:var(--surface)}
+.skulist button.on{background:var(--surface);border-color:var(--line)}
+.skulist .nm{font-weight:500;font-size:.92rem;line-height:1.3}
+.compare{display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr);gap:16px}
+.card{padding:18px 20px;display:flex;flex-direction:column;gap:14px;min-width:0}
+.card.after{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.cardhead{display:flex;align-items:center;gap:10px;justify-content:space-between}
+.label{font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.score{font-family:var(--f-display);font-size:1.6rem;line-height:1}
+.score small{font-size:.8rem;color:var(--muted);font-family:var(--f-body)}
+.ltitle{font-weight:600;font-size:1.02rem;line-height:1.4}
+.bullets{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:6px;font-size:.93rem}
+.flags{display:flex;flex-direction:column;gap:6px}
+.flag{font-size:.85rem;padding:7px 10px;border-radius:6px;background:var(--bad-soft);color:var(--bad)}
+.kw{display:flex;flex-wrap:wrap;gap:6px}
+.kw span{font-family:var(--f-mono);font-size:.8rem;background:var(--sunk);padding:2px 8px;border-radius:4px}
+.attrs{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 14px;font-size:.88rem}
+.attrs dt{color:var(--muted)}
+.attrs dd{margin:0}
+.attrs dd.miss{color:var(--bad);font-weight:500}
+.empty{padding:40px 20px;text-align:center;color:var(--muted)}
+.cursor::after{content:"▍";color:var(--accent);animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.livebox{display:flex;align-items:center;gap:8px;font-size:.88rem;color:var(--muted)}
+.note{font-size:.85rem;color:var(--muted)}
+.err{font-size:.85rem;color:var(--bad)}
+
+/* checks */
+.issue{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:8px 0;border-top:1px dashed var(--line);font-size:.9rem}
+.issue:first-child{border-top:0}
+.issue .what{flex:1;min-width:200px}
+.issue input,.issue select{font:inherit;font-size:.88rem;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink)}
+
+/* publish log */
+.log{font-family:var(--f-mono);font-size:.82rem;background:var(--sunk);border-radius:8px;padding:14px 16px;min-height:120px;max-height:260px;overflow:auto;display:flex;flex-direction:column;gap:3px}
+.log .ok{color:var(--good)} .log .no{color:var(--bad)}
+
+/* summary */
+.kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:24px}
+.kpi{padding:16px 18px}
+.kpi .v{font-family:var(--f-display);font-size:2rem;line-height:1.1;font-variant-numeric:tabular-nums}
+.kpi .k{color:var(--muted);font-size:.85rem}
+.sumgrid{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:24px;align-items:start}
+
+/* phone */
+.phone{width:100%;max-width:340px;margin:0 auto;border:8px solid var(--ink);border-radius:30px;overflow:hidden;background:var(--wa-bg);display:flex;flex-direction:column;height:560px}
+.phone .bar{background:var(--wa-bar);color:#fff;padding:12px 14px;display:flex;align-items:center;gap:10px}
+.phone .av{width:32px;height:32px;border-radius:50%;background:#2fae8f;display:grid;place-items:center;font-weight:700;font-size:.8rem;color:#fff}
+.phone .bar b{font-size:.92rem;display:block}
+.phone .bar span{font-size:.72rem;opacity:.8}
+.chat{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:8px}
+.msg{max-width:88%;padding:8px 10px 6px;border-radius:8px;font-size:.84rem;line-height:1.45;white-space:pre-wrap;word-wrap:break-word;box-shadow:0 1px 0 rgba(0,0,0,.08);color:var(--ink)}
+.msg.in{background:var(--wa-in);align-self:flex-start;border-top-left-radius:0}
+.msg.out{background:var(--wa-out);align-self:flex-end;border-top-right-radius:0}
+.msg .t{display:block;text-align:right;font-size:.66rem;color:var(--muted);margin-top:2px}
+.msg img{display:block;border-radius:6px;margin-bottom:6px;max-height:160px;object-fit:cover;width:100%}
+.compose{display:flex;gap:6px;padding:8px;background:var(--wa-bg);align-items:flex-end}
+.compose textarea{flex:1;resize:none;border:0;border-radius:18px;padding:9px 12px;font:inherit;font-size:.85rem;background:var(--wa-in);color:var(--ink);height:40px}
+.iconbtn{width:40px;height:40px;flex:none;border-radius:50%;border:0;background:var(--wa-bar);color:#fff;display:grid;place-items:center;font-size:1rem}
+.iconbtn.ghost{background:var(--wa-in);color:var(--muted)}
+.tryside{display:flex;flex-direction:column;gap:14px}
+.tryside ol{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:6px}
+.chips-row{display:flex;flex-wrap:wrap;gap:6px}
+.chips-row button{border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:999px;padding:5px 11px;font-size:.82rem}
+
+footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);font-size:.82rem;color:var(--muted);display:flex;flex-wrap:wrap;gap:8px 20px}
+
+@media (max-width:860px){
+  .split,.compare,.sumgrid{grid-template-columns:minmax(0,1fr)}
+  .skulist{flex-direction:row;overflow-x:auto}
+  .skulist button{flex:none;width:180px}
+  .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (prefers-reduced-motion:reduce){.cursor::after{animation:none}}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="brand"><b>ListingPilot</b><span>by IterativeTech</span></div>
+    <div class="demo-pill">Demo mode · sample catalogue of a fictional brand · nothing is sent to Amazon</div>
+  </header>
+
+  <nav class="steps" id="steps" aria-label="Demo steps"></nav>
+
+  <section id="tab-catalogue"></section>
+  <section id="tab-ai" hidden></section>
+  <section id="tab-check" hidden></section>
+  <section id="tab-publish" hidden></section>
+  <section id="tab-summary" hidden></section>
+  <section id="tab-photo" hidden></section>
+
+  <footer>
+    <span>Built on Amazon's official Selling Partner API (Listings Items API and JSON listings feed).</span>
+    <span>Demo by IterativeTech, Jaipur</span>
+  </footer>
+</div>
+
+<script>
+const BRAND = "Gulmohar Home";
+const TABS = [
+  {id:"catalogue", label:"Catalogue"},
+  {id:"ai", label:"AI listings"},
+  {id:"check", label:"Check & fix"},
+  {id:"publish", label:"Publish"},
+  {id:"summary", label:"Owner summary"},
+  {id:"photo", label:"Photo to listing"}
+];
+
+const P = [
+ {sku:"JBP-101", name:"Hand block print double bedsheet", cat:"Bedsheets", price:1299, stock:40, images:5,
+  attrs:{"Material":"100% cotton","Size":"90 x 100 in (double)","Thread count":"180 TC","Colour":"Indigo and white","Pattern":"Floral, hand block print","Included":"1 bedsheet + 2 pillow covers (17 x 27 in)","Care":"Machine wash cold"},
+  current:{title:"Bedsheet cotton double", bullets:["Good quality bedsheet","Cotton"], filled:2, flags:[]},
+  draft:{title:"Gulmohar Home Jaipuri Hand Block Print 100% Cotton Double Bedsheet with 2 Pillow Covers, 180 TC, 90 x 100 inch, Indigo Floral",
+   bullets:["HAND BLOCK PRINTED IN JAIPUR: Each sheet is printed by hand with carved wooden blocks, so small variations in the floral pattern are part of its character.",
+    "BREATHABLE 100% COTTON: 180 thread count cotton stays cool in summer and gets softer with every wash.",
+    "FITS DOUBLE BEDS: The generous 90 x 100 inch size tucks in neatly on standard double mattresses.",
+    "COMPLETE SET: Includes 1 flat bedsheet and 2 matching pillow covers of 17 x 27 inch.",
+    "EASY CARE: Machine wash cold with similar colours and dry in shade to keep the indigo rich."],
+   desc:"Bring the craft of Jaipur's block printers to your bedroom. This indigo floral bedsheet is hand printed on breathable 100% cotton and comes with two matching pillow covers, ready to gift or use.",
+   keywords:["jaipuri bedsheet","block print bedsheet double","cotton bedsheet with pillow cover","indigo floral bedsheet","sanganeri print bedsheet","180 tc cotton bedsheet"]}},
+ {sku:"BRS-220", name:"Brass diya, set of 2", cat:"Pooja items", price:749, stock:120, images:3,
+  attrs:{"Material":"Solid brass","Dimensions":"4 x 4 x 2.5 in each","Count":"Set of 2","Finish":"Hand-polished antique gold","Weight":"350 g (set)","Occasion":"Diwali, pooja, home décor"},
+  current:{title:"Brass Diya", bullets:["brass diya for pooja"], filled:1, flags:[]},
+  draft:{title:"Gulmohar Home Solid Brass Diya Set of 2, 4 inch Hand-Polished Antique Gold Oil Lamp for Pooja, Diwali and Home Décor",
+   bullets:["SOLID BRASS: Cast from solid brass for a heavy, stable base that will not tip during long aartis.",
+    "HAND-POLISHED FINISH: An antique gold polish that catches the flame and looks rich on any mandir.",
+    "RIGHT SIZE FOR DAILY POOJA: Each diya measures 4 x 4 x 2.5 inch and holds enough ghee or oil for a long burn.",
+    "SET OF 2: A matched pair, ideal for doorways, rangoli corners and Diwali gifting.",
+    "EASY TO CLEAN: Wipe with lemon and salt or a brass cleaner to restore the shine."],
+   desc:"A matched pair of solid brass diyas with an antique gold finish, sized for daily pooja and festive décor. A lasting choice for Diwali, griha pravesh and gifting.",
+   keywords:["brass diya set","diwali diya brass","pooja diya for mandir","akhand diya brass","brass oil lamp","diya for gifting"]}},
+ {sku:"KRT-310", name:"Women's indigo dabu print kurta", cat:"Kurtas", price:899, stock:65, images:6,
+  attrs:{"Material":"Cotton cambric","Colour":"Indigo","Print":"Dabu hand block print","Fit":"Straight","Sleeve":"3/4 sleeve","Length":"46 in","Size":"","Care":"Hand wash cold"},
+  current:{title:"Kurta for women cotton printed", bullets:["Cotton kurta","Free delivery"], filled:3, flags:["Mentions “Free delivery”, which Amazon does not allow in listing text"]},
+  draft:{title:"Gulmohar Home Women's Cotton Indigo Dabu Hand Block Print Straight Kurta, 3/4 Sleeve, 46 inch Calf Length",
+   bullets:["DABU HAND BLOCK PRINT: Printed with the traditional mud-resist dabu technique for a soft, hand-made indigo look.",
+    "BREATHABLE COTTON CAMBRIC: Light, airy cotton that is comfortable for office days and long summer afternoons.",
+    "EASY STRAIGHT FIT: A relaxed straight cut with 3/4 sleeves that pairs with palazzos, churidars or jeans.",
+    "CALF LENGTH: 46 inch length that works for workwear and festive dressing alike.",
+    "CARE: Hand wash cold separately; the natural dye may release a little colour in the first wash."],
+   desc:"An everyday indigo kurta made with dabu, the mud-resist block printing craft of Rajasthan. Straight cut, breathable cotton and a calf length that dresses up or down.",
+   keywords:["indigo kurta for women","dabu print kurta","cotton straight kurta","hand block print kurta","office wear kurta women","jaipuri kurta"]}},
+ {sku:"BLU-415", name:"Blue pottery ceramic planter", cat:"Planters", price:1050, stock:25, images:2,
+  attrs:{"Material":"Hand-painted blue pottery ceramic","Dimensions":"6 x 6 x 5.5 in","Drainage":"Drainage hole with plug","Colour":"Cobalt blue and white","Use":"Indoor plants, succulents"},
+  current:{title:"Planter", bullets:[], filled:1, flags:[]},
+  draft:{title:"Gulmohar Home Jaipur Blue Pottery Hand-Painted Ceramic Planter, 6 inch, with Drainage Hole, Cobalt Blue Pot for Indoor Plants",
+   bullets:["JAIPUR BLUE POTTERY: Hand painted by artisans in the city's signature cobalt blue and white.",
+    "HEALTHY ROOTS: A drainage hole with a removable plug lets you choose between direct planting and use as a cover pot.",
+    "COMPACT 6 INCH SIZE: Measures 6 x 6 x 5.5 inch, right for succulents, money plants and small herbs.",
+    "MADE TO DISPLAY: A glazed finish that brightens a desk, windowsill or bookshelf.",
+    "THOUGHTFUL GIFT: Each piece is hand painted, so patterns vary slightly from pot to pot."],
+   desc:"A hand-painted planter in Jaipur's famous blue pottery style. The 6 inch size and drainage hole make it practical for everyday indoor plants.",
+   keywords:["blue pottery planter","jaipur blue pottery","ceramic planter 6 inch","indoor plant pot ceramic","hand painted pot","succulent pot"]}},
+ {sku:"MJR-520", name:"Men's leather mojari", cat:"Ethnic footwear", price:1499, stock:30, images:5,
+  attrs:{"Upper":"Genuine leather","Sole":"Leather sole","Colour":"Tan with gold embroidery","Closure":"Slip-on","Sizes":"UK 6 to 11"},
+  current:{title:"Mojari men", bullets:["Leather","Wedding wear"], filled:2, flags:[]},
+  draft:{title:"Gulmohar Home Men's Handcrafted Genuine Leather Mojari with Gold Embroidery, Tan Slip-On Ethnic Jutti for Wedding and Festive Wear",
+   bullets:["HANDCRAFTED LEATHER: Genuine leather upper and leather sole, stitched by hand by Rajasthani craftsmen.",
+    "GOLD EMBROIDERY: Fine gold thread work that complements sherwanis, kurtas and bandhgalas.",
+    "EASY SLIP-ON: No laces or buckles; slips on in seconds for weddings, poojas and celebrations.",
+    "SIZES UK 6 TO 11: Leather softens and moulds to your foot after a few wears.",
+    "FESTIVE READY: A classic tan shade that suits both light and dark ethnic outfits."],
+   desc:"A handcrafted tan mojari with gold embroidery, made from genuine leather inside and out. The finishing touch for weddings and festive wear.",
+   keywords:["mojari for men","leather jutti men","wedding jutti","ethnic footwear men","punjabi jutti tan","embroidered mojari"]}},
+ {sku:"QLT-610", name:"Jaipuri cotton razai, single", cat:"Quilts", price:1899, stock:18, images:5,
+  attrs:{"Fill":"Cotton, 500 g","Outer":"Cotton voile, hand block print","Size":"Single, 60 x 90 in","Weight":"Ultra-light, 500 g","Colour":"Rose pink","Care":"Dry clean recommended"},
+  current:{title:"Jaipuri Razai single bed light weight", bullets:["Light weight razai","Cotton"], filled:3, flags:[]},
+  draft:{title:"Gulmohar Home Jaipuri Ultra-Light Cotton Razai, Single Bed, 60 x 90 inch, Hand Block Print Rose Pink Quilt for Winter",
+   bullets:["FAMOUS JAIPURI RAZAI: Filled with 500 g of hand-carded cotton for warmth without the weight.",
+    "SOFT VOILE OUTER: Fine cotton voile cover with a rose pink hand block print.",
+    "SINGLE BED SIZE: 60 x 90 inch, right for single beds, dorms and guest rooms.",
+    "FOLDS SMALL: Light enough to fold into a small bundle for travel and storage.",
+    "CARE: Dry clean recommended to keep the cotton filling even and fluffy."],
+   desc:"The classic ultra-light Jaipuri razai, filled with hand-carded cotton and covered in soft block printed voile. Warm on winter nights and easy to store.",
+   keywords:["jaipuri razai single","cotton quilt single bed","light weight razai","winter quilt cotton","jaipuri rajai","block print quilt"]}}
+];
+P.forEach(p => { p.gen = null; p.approved = false; p.pub = "no"; });
+
+const S = {tab:"catalogue", sel:"JBP-101", live:false, sample:null, imgs:false, busy:false, chat:[], publishing:false, log:[]};
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const rupee = n => "₹" + Number(n).toLocaleString("en-IN");
+const byId = sku => P.find(p => p.sku === sku);
+
+function missingAttrs(p){ return Object.entries(p.attrs).filter(([,v]) => !String(v).trim()).map(([k]) => k); }
+function filledCount(p){ return Object.values(p.attrs).filter(v => String(v).trim()).length; }
+
+function score(p, which){
+  const L = which === "after" ? p.gen : p.current;
+  if (!L) return null;
+  const t = L.title.length;
+  const title = t >= 80 && t <= 200 ? 5 : t >= 40 ? 3 : 1;
+  const bullets = Math.min(5, L.bullets.filter(b => b.length >= 40).length);
+  const total = Object.keys(p.attrs).length;
+  const filled = which === "after" ? filledCount(p) : L.filled;
+  const attrs = Math.round(5 * filled / total);
+  const kw = which === "after" ? Math.min(5, (L.keywords || []).length) : 0;
+  const img = p.images >= 6 ? 5 : p.images >= 5 ? 4 : p.images >= 3 ? 2 : 1;
+  return {total: title + bullets + attrs + kw + img, parts:{title, bullets, attrs, kw, img, aplus:0}};
+}
+
+function issues(p){
+  const out = [];
+  missingAttrs(p).forEach(k => out.push({lvl:"bad", kind:"attr", key:k, text:`${k} is required for ${p.cat} and is missing from your data`}));
+  if (p.images < 3) out.push({lvl:"bad", kind:"img", text:`Only ${p.images} images. Add at least 3 (main image on white plus views)`});
+  else if (p.images < 5) out.push({lvl:"warn", kind:"img", text:`${p.images} images. 5 or more are recommended for better conversion`});
+  if (p.gen){
+    if (p.gen.title.length > 200) out.push({lvl:"bad", text:`Title is ${p.gen.title.length} characters; Amazon allows 200`});
+    const banned = /(free delivery|free shipping|best seller|guarantee|cheapest|100% satisfaction)/i;
+    [p.gen.title, ...p.gen.bullets, p.gen.desc].forEach(s => { const m = String(s).match(banned); if (m) out.push({lvl:"bad", text:`Contains “${m[0]}”, which Amazon does not allow`}); });
+  }
+  if (!(p.price > 0)) out.push({lvl:"bad", text:"Price is missing"});
+  return out;
+}
+function state(p){
+  if (p.pub === "live") return ["Live on Amazon", "c-good"];
+  if (p.pub === "sending") return ["Submitting", "c-acc"];
+  if (!p.gen) return ["Not generated", "c-idle"];
+  const is = issues(p);
+  if (is.some(i => i.lvl === "bad")) return ["Needs fix", "c-bad"];
+  if (p.approved) return ["Approved", "c-acc"];
+  return ["Ready to review", "c-warn"];
+}
+
+/* ---------- steps ---------- */
+function renderSteps(){
+  const done = {
+    catalogue: P.some(p => p.gen), ai: P.some(p => p.approved), check: P.every(p => p.gen && !issues(p).some(i => i.lvl === "bad")),
+    publish: P.some(p => p.pub === "live"), summary:false, photo:false
+  };
+  $("#steps").innerHTML = TABS.map((t, i) =>
+    `<button data-tab="${t.id}" class="${S.tab === t.id ? "on" : ""} ${done[t.id] && S.tab !== t.id ? "done" : ""}" ${S.tab === t.id ? 'aria-current="step"' : ""}><span class="n">${i + 1}</span>${t.label}</button>`).join("");
+  $("#steps").querySelectorAll("button").forEach(b => b.onclick = () => go(b.dataset.tab));
+}
+function go(tab){
+  S.tab = tab;
+  TABS.forEach(t => $("#tab-" + t.id).hidden = t.id !== tab);
+  render();
+  window.scrollTo({top:0, behavior:"smooth"});
+}
+
+/* ---------- 1 catalogue ---------- */
+function renderCatalogue(){
+  const anyGen = P.some(p => p.gen);
+  $("#tab-catalogue").innerHTML = `
+  <div class="head">
+    <div><h2>Your team fills one sheet</h2>
+      <p class="lead">These are the product basics only: SKU, price, stock, photos and specs. In the live system this comes straight from your Excel, Tally export or a supplier PDF. No one types into Seller Central.</p></div>
+    <div class="actions"><button class="btn primary" id="genAll">${anyGen ? "View AI listings" : "Generate 6 listings with AI"}</button></div>
+  </div>
+  <div class="panel tablewrap"><table>
+    <thead><tr><th>SKU</th><th>Product</th><th>Category</th><th class="num">Price</th><th class="num">Stock</th><th class="num">Photos</th><th>Specs filled</th><th>Status</th></tr></thead>
+    <tbody>${P.map(p => { const f = filledCount(p), t = Object.keys(p.attrs).length, [s, c] = state(p);
+      return `<tr><td class="mono">${p.sku}</td><td>${esc(p.name)}</td><td class="muted">${p.cat}</td><td class="num">${rupee(p.price)}</td><td class="num">${p.stock}</td><td class="num">${p.images}</td>
+      <td><div class="meter"><i><b style="width:${100 * f / t}%"></b></i><span class="mono">${f}/${t}</span></div></td><td><span class="chip ${c}">${s}</span></td></tr>`; }).join("")}</tbody>
+  </table></div>
+  <p class="note" style="margin-top:12px">Sample data for a fictional Jaipur home and lifestyle brand. In the pitch, we replace it with 10 to 20 of your own products.</p>`;
+  $("#genAll").onclick = () => { if (!anyGen) generateAll(); go("ai"); };
+}
+
+async function typeInto(p, d){
+  const g = {title:"", bullets:[], desc:"", keywords:[], typing:true};
+  p.gen = g;
+  const steps = [];
+  const words = d.title.split(" ");
+  for (let i = 1; i <= words.length; i += 3) steps.push(() => g.title = words.slice(0, i).join(" "));
+  steps.push(() => g.title = d.title);
+  d.bullets.forEach(b => steps.push(() => g.bullets.push(b)));
+  steps.push(() => { g.desc = d.desc; g.keywords = d.keywords.slice(); });
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  for (const s of steps){ s(); if (S.tab === "ai" && S.sel === p.sku) renderAI(); if (!reduce) await new Promise(r => setTimeout(r, 70)); }
+  g.typing = false;
+}
+async function generateAll(){
+  S.busy = true;
+  for (const p of P){ if (!p.gen){ S.sel = S.tab === "ai" ? p.sku : S.sel; await typeInto(p, p.draft); render(); } }
+  S.busy = false; render();
+}
+
+/* ---------- 2 AI listings ---------- */
+function scoreBadge(sc){ if (!sc) return ""; const c = sc.total >= 20 ? "var(--good)" : sc.total >= 12 ? "var(--warn)" : "var(--bad)";
+  return `<div class="score" style="color:${c}">${sc.total}<small> / 30</small></div>`; }
+
+function renderAI(){
+  const p = byId(S.sel);
+  const before = score(p, "before"), after = score(p, "after");
+  const g = p.gen;
+  const liveBtn = S.sample ? `<button class="btn small" id="rewrite" ${S.busy ? "disabled" : ""}>Rewrite live with AI</button>` : "";
+  $("#tab-ai").innerHTML = `
+  <div class="head">
+    <div><h2>AI writes every listing in your brand voice</h2>
+      <p class="lead">Title, five bullets, description and search keywords for each product, using only the facts in your sheet. Compare with what is live today.</p></div>
+    <div class="actions">
+      <button class="btn" id="approveAll" ${P.some(q => q.gen && !q.gen.typing) ? "" : "disabled"}>Approve all drafts</button>
+      <button class="btn primary" id="toCheck">Check before publishing</button>
+    </div>
+  </div>
+  <div class="split">
+    <div class="skulist">${P.map(q => { const [s, c] = state(q); const a = score(q, "after");
+      return `<button data-sku="${q.sku}" class="${q.sku === S.sel ? "on" : ""}"><span class="mono muted">${q.sku}</span><span class="nm">${esc(q.name)}</span>
+      <span style="display:flex;gap:6px;align-items:center"><span class="chip ${c}">${s}</span>${a ? `<span class="mono muted">${score(q, "before").total}→${a.total}</span>` : ""}</span></button>`; }).join("")}</div>
+    <div class="compare">
+      <div class="panel card">
+        <div class="cardhead"><span class="label">Live today (typed by hand)</span>${scoreBadge(before)}</div>
+        <div class="ltitle">${esc(p.current.title)}</div>
+        ${p.current.bullets.length ? `<ul class="bullets">${p.current.bullets.map(b => `<li>${esc(b)}</li>`).join("")}</ul>` : `<p class="muted">No bullet points.</p>`}
+        <p class="muted" style="font-size:.88rem">No search keywords. ${p.current.filled} of ${Object.keys(p.attrs).length} specs filled.</p>
+        ${p.current.flags.length ? `<div class="flags">${p.current.flags.map(f => `<div class="flag">${esc(f)}</div>`).join("")}</div>` : ""}
+      </div>
+      <div class="panel card after">
+        <div class="cardhead"><span class="label">ListingPilot draft</span>${scoreBadge(g && !g.typing ? after : null)}</div>
+        ${!g ? `<div class="empty">Not generated yet.<br><br><button class="btn primary" id="genOne">Generate this listing</button></div>` : `
+          <div class="ltitle ${g.typing && !g.bullets.length ? "cursor" : ""}">${esc(g.title)}</div>
+          <ul class="bullets">${g.bullets.map(b => `<li>${esc(b)}</li>`).join("")}${g.typing && g.bullets.length ? `<li class="cursor" style="list-style:none"></li>` : ""}</ul>
+          ${g.desc ? `<div><div class="label" style="margin-bottom:4px">Description</div><p style="font-size:.93rem">${esc(g.desc)}</p></div>` : ""}
+          ${g.keywords.length ? `<div><div class="label" style="margin-bottom:6px">Backend search keywords</div><div class="kw">${g.keywords.map(k => `<span>${esc(k)}</span>`).join("")}</div></div>` : ""}
+          ${!g.typing ? `<div><div class="label" style="margin-bottom:6px">Specs sent to Amazon</div><dl class="attrs">${Object.entries(p.attrs).map(([k, v]) => `<dt>${k}</dt><dd class="${v ? "" : "miss"}">${v ? esc(v) : "Missing in your sheet"}</dd>`).join("")}</dl></div>
+          <div class="toolbar">
+            <button class="btn small ${p.approved ? "" : "primary"}" id="approve">${p.approved ? "Approved ✓" : "Approve draft"}</button>
+            ${liveBtn}<span class="note" id="aiNote">${g.liveMade ? "Written live by AI just now." : ""}</span>
+          </div>` : ""}`}
+      </div>
+    </div>
+  </div>`;
+  $("#tab-ai").querySelectorAll(".skulist button").forEach(b => b.onclick = () => { S.sel = b.dataset.sku; renderAI(); });
+  $("#toCheck").onclick = () => go("check");
+  const aa = $("#approveAll"); if (aa) aa.onclick = () => { P.forEach(q => { if (q.gen && !q.gen.typing) q.approved = true; }); render(); };
+  const g1 = $("#genOne"); if (g1) g1.onclick = async () => { await typeInto(p, p.draft); render(); };
+  const ap = $("#approve"); if (ap) ap.onclick = () => { p.approved = !p.approved; render(); };
+  const rw = $("#rewrite"); if (rw) rw.onclick = () => liveRewrite(p);
+}
+
+const ERR_COPY = {
+  not_granted:"Live AI was not allowed in this view. The prepared drafts still work.",
+  rate_limited:"Too many requests just now. Try again in a minute.",
+  session_expired:"Please sign in to Claude again to use live AI.",
+  invalid_json:"The AI reply could not be read. Try again.",
+  refused:"The AI declined this request. Try different wording."
+};
+const errText = e => ERR_COPY[e?.code] || "Live AI is unavailable right now. Try again shortly.";
+
+async function liveRewrite(p){
+  if (!S.sample || S.busy) return;
+  S.busy = true; renderAI();
+  const note = $("#aiNote"); if (note) note.textContent = "AI is writing…";
+  const facts = Object.entries(p.attrs).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join("\n");
+  const prompt = `You write product listings for Amazon.in. Brand: ${BRAND}. Category: ${p.cat}. Product: ${p.name}. Price: ${rupee(p.price)}.
+Facts (use only these; never invent specs, certifications or offers):
+${facts}
+
+Reply with only JSON: {"title": string of 120-190 characters starting with "${BRAND}", "bullets": array of exactly 5 strings, each starting with a short CAPS label and a colon, 100-220 characters, "description": string of 40-80 words, "keywords": array of 6 lowercase search phrases Indian shoppers type}.
+Do not mention delivery, discounts, "best", guarantees or competitor brands.`;
+  try{
+    const r = await S.sample.json(prompt, {modelTier:"quick", cache:false});
+    if (!r || typeof r.title !== "string" || !Array.isArray(r.bullets)) throw {code:"invalid_json"};
+    p.gen = {title:r.title, bullets:r.bullets.slice(0, 5).map(String), desc:String(r.description || ""), keywords:(r.keywords || []).slice(0, 8).map(String), typing:false, liveMade:true};
+    p.approved = false;
+    S.busy = false; render();
+  }catch(e){
+    S.busy = false; renderAI();
+    if (e?.code === "not_granted" || e?.code === "sampling_disabled"){ S.sample = null; renderAI(); }
+    const n = $("#aiNote"); if (n){ n.className = "err"; n.textContent = errText(e); }
+  }
+}
+
+/* ---------- 3 check & fix ---------- */
+function renderCheck(){
+  const gen = P.filter(p => p.gen && !p.gen.typing);
+  const blocking = gen.filter(p => issues(p).some(i => i.lvl === "bad")).length;
+  $("#tab-check").innerHTML = `
+  <div class="head">
+    <div><h2>Every listing is checked before Amazon sees it</h2>
+      <p class="lead">Required specs for each category, photo count, title length and banned claims. Problems are fixed here, in one place, instead of after Amazon rejects the listing.</p></div>
+    <div class="actions"><button class="btn primary" id="toPub">Go to publishing</button></div>
+  </div>
+  ${!gen.length ? `<div class="panel empty">Generate listings first.<br><br><button class="btn primary" id="genFromCheck">Generate listings</button></div>` : `
+  <p style="margin-bottom:12px"><b>${gen.length - blocking}</b> of ${gen.length} listings pass. ${blocking ? `<span style="color:var(--bad)">${blocking} need a fix before publishing.</span>` : `<span style="color:var(--good)">All clear to publish.</span>`}</p>
+  <div class="panel tablewrap"><table>
+    <thead><tr><th>SKU</th><th>Product</th><th>Result</th><th style="width:55%">Checks</th></tr></thead>
+    <tbody>${gen.map(p => { const is = issues(p); const bad = is.some(i => i.lvl === "bad");
+      const res = bad ? `<span class="chip c-bad">Blocked</span>` : is.length ? `<span class="chip c-warn">Pass with notes</span>` : `<span class="chip c-good">Pass</span>`;
+      const rows = is.length ? is.map((i, n) => {
+        let fix = "";
+        if (i.kind === "attr" && i.key === "Size") fix = `<select id="fix-${p.sku}-${n}" aria-label="Size range"><option value="">Choose sizes</option><option>S, M, L, XL, XXL</option><option>XS to XXL</option><option>Free size</option></select><button class="btn small primary" data-fix="${p.sku}" data-key="${i.key}" data-n="${n}">Save</button>`;
+        else if (i.kind === "attr") fix = `<input id="fix-${p.sku}-${n}" placeholder="Enter ${i.key.toLowerCase()}" aria-label="${i.key}"><button class="btn small primary" data-fix="${p.sku}" data-key="${i.key}" data-n="${n}">Save</button>`;
+        else if (i.kind === "img") fix = `<button class="btn small" data-img="${p.sku}">Add 3 photos</button>`;
+        return `<div class="issue"><span class="chip ${i.lvl === "bad" ? "c-bad" : "c-warn"}">${i.lvl === "bad" ? "Error" : "Note"}</span><span class="what">${esc(i.text)}</span>${fix}</div>`;
+      }).join("") : `<div class="issue"><span class="chip c-good">OK</span><span class="what">All ${Object.keys(p.attrs).length} required specs present, title ${p.gen.title.length}/200 characters, ${p.images} photos, no banned claims</span></div>`;
+      return `<tr><td class="mono">${p.sku}</td><td>${esc(p.name)}</td><td>${res}</td><td>${rows}</td></tr>`; }).join("")}</tbody>
+  </table></div>`}`;
+  $("#toPub").onclick = () => go("publish");
+  const gf = $("#genFromCheck"); if (gf) gf.onclick = () => { generateAll(); go("ai"); };
+  $("#tab-check").querySelectorAll("[data-fix]").forEach(b => b.onclick = () => {
+    const p = byId(b.dataset.fix), el = $(`#fix-${b.dataset.fix}-${b.dataset.n}`);
+    const v = (el?.value || "").trim(); if (!v){ el?.focus(); return; }
+    p.attrs[b.dataset.key] = v; render();
+  });
+  $("#tab-check").querySelectorAll("[data-img]").forEach(b => b.onclick = () => { byId(b.dataset.img).images += 3; render(); });
+}
+
+/* ---------- 4 publish ---------- */
+function renderPublish(){
+  const ready = P.filter(p => p.gen && !p.gen.typing && p.approved && p.pub !== "live" && !issues(p).some(i => i.lvl === "bad"));
+  $("#tab-publish").innerHTML = `
+  <div class="head">
+    <div><h2>Approved listings go live in one click</h2>
+      <p class="lead">ListingPilot sends listings through Amazon's official Selling Partner API, not a screen bot, so the seller account stays safe. Anything Amazon rejects comes back here with the reason.</p></div>
+    <div class="actions"><button class="btn primary" id="pubBtn" ${ready.length && !S.publishing ? "" : "disabled"}>Publish ${ready.length || ""} approved listing${ready.length === 1 ? "" : "s"}</button></div>
+  </div>
+  <div class="panel tablewrap" style="margin-bottom:16px"><table>
+    <thead><tr><th>SKU</th><th>Product</th><th>Approved</th><th>Checks</th><th>Amazon status</th></tr></thead>
+    <tbody>${P.map(p => { const is = p.gen ? issues(p) : []; const bad = is.some(i => i.lvl === "bad");
+      const st = p.pub === "live" ? `<span class="chip c-good">Live (demo)</span>` : p.pub === "sending" ? `<span class="chip c-acc">Submitting</span>` : `<span class="chip c-idle">Not sent</span>`;
+      return `<tr><td class="mono">${p.sku}</td><td>${esc(p.name)}</td><td>${p.approved ? "Yes" : `<span class="muted">No</span>`}</td>
+        <td>${!p.gen ? `<span class="muted">Not generated</span>` : bad ? `<span class="chip c-bad">Blocked</span>` : `<span class="chip c-good">Pass</span>`}</td><td>${st}</td></tr>`; }).join("")}</tbody>
+  </table></div>
+  ${!ready.length && !P.some(p => p.pub === "live") ? `<p class="note" style="margin-bottom:12px">Nothing is ready yet. Approve drafts in step 2 and clear errors in step 3.</p>` : ""}
+  <div class="label" style="margin-bottom:6px">Submission log</div>
+  <div class="log" id="log" aria-live="polite">${S.log.length ? S.log.join("") : `<span class="muted">Waiting for the first submission.</span>`}</div>`;
+  $("#pubBtn").onclick = () => publish(ready);
+  const lg = $("#log"); lg.scrollTop = lg.scrollHeight;
+}
+async function publish(list){
+  S.publishing = true;
+  const wait = ms => new Promise(r => setTimeout(r, matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : ms));
+  const ts = () => new Date().toLocaleTimeString("en-IN", {hour:"2-digit", minute:"2-digit", second:"2-digit"});
+  const add = (h) => { S.log.push(`<div>${h}</div>`); if (S.tab === "publish") renderPublish(); };
+  add(`[${ts()}] Batch of ${list.length} listings prepared as JSON listings feed`);
+  for (const p of list){
+    p.pub = "sending"; add(`[${ts()}] ${p.sku} validating against Amazon's ${esc(p.cat)} schema…`); await wait(450);
+    add(`[${ts()}] ${p.sku} submitted`); await wait(350);
+    p.pub = "live"; add(`<span class="ok">[${ts()}] ${p.sku} accepted, listing live (demo)</span>`); await wait(200);
+  }
+  const blocked = P.filter(p => p.gen && issues(p).some(i => i.lvl === "bad"));
+  blocked.forEach(p => add(`<span class="no">[${ts()}] ${p.sku} held back: ${esc(issues(p).find(i => i.lvl === "bad").text)}</span>`));
+  add(`[${ts()}] Done. ${P.filter(p => p.pub === "live").length} live, ${blocked.length} waiting for a fix.`);
+  S.publishing = false; render();
+}
+
+/* ---------- 5 owner summary ---------- */
+function renderSummary(){
+  const live = P.filter(p => p.pub === "live");
+  const needs = P.filter(p => p.gen && issues(p).some(i => i.lvl === "bad"));
+  const low = P.filter(p => p.stock <= 25);
+  const avgB = Math.round(P.reduce((s, p) => s + score(p, "before").total, 0) / P.length);
+  const genP = P.filter(p => p.gen && !p.gen.typing);
+  const avgA = genP.length ? Math.round(genP.reduce((s, p) => s + score(p, "after").total, 0) / genP.length) : null;
+  const saved = Math.round(live.length * 25 / 6) / 10;
+  const today = new Date().toLocaleDateString("en-IN", {day:"numeric", month:"short"});
+  const msg = `Good morning! ListingPilot summary, ${today}
+
+Live on Amazon: ${live.length}
+Needs a fix: ${needs.length}${needs.length ? "\n" + needs.map(p => `• ${p.sku}: ${issues(p).find(i => i.lvl === "bad").text.split(".")[0].toLowerCase()}`).join("\n") : ""}
+Low stock: ${low.length}${low.length ? "\n" + low.map(p => `• ${p.sku}: ${p.stock} left`).join("\n") : ""}
+Listing quality: ${avgA ?? "–"}/30 (was ${avgB}/30)
+
+Reply 1 for errors, 2 for stock report.`;
+  $("#tab-summary").innerHTML = `
+  <div class="head">
+    <div><h2>The owner sees everything on WhatsApp</h2>
+      <p class="lead">Every morning a short summary: what went live, what is stuck, what is running out. No Seller Central login needed. The numbers below update as you use this demo.</p></div>
+  </div>
+  <div class="kpis">
+    <div class="panel kpi"><div class="v">${live.length}<span class="muted" style="font-size:1rem"> / ${P.length}</span></div><div class="k">Listings live</div></div>
+    <div class="panel kpi"><div class="v" style="color:${needs.length ? "var(--bad)" : "var(--good)"}">${needs.length}</div><div class="k">Need a fix</div></div>
+    <div class="panel kpi"><div class="v">${avgB}<span class="muted" style="font-size:1rem"> → </span>${avgA ?? "–"}</div><div class="k">Avg listing score, out of 30</div></div>
+    <div class="panel kpi"><div class="v">${saved}<span class="muted" style="font-size:1rem"> hrs</span></div><div class="k">Staff time saved so far</div></div>
+  </div>
+  <div class="sumgrid">
+    <div class="panel card">
+      <h3>How we estimate time saved</h3>
+      <p class="muted" style="font-size:.93rem">A hand-typed listing takes about 30 minutes; with ListingPilot the team spends about 5 minutes reviewing. That saves 25 minutes per listing. At 300 listings a month, that is roughly 125 staff hours back every month.</p>
+      <h3 style="margin-top:6px">What else the owner can ask on WhatsApp</h3>
+      <ul class="bullets"><li>“Show today's errors” lists stuck listings with the reason.</li><li>“Stock report” lists SKUs below their reorder level.</li><li>“Price of KRT-310 to 949” updates the price after confirmation.</li></ul>
+      <p class="note">The baseline of 30 minutes per listing is an assumption. We measure the real figure with your team during the pilot.</p>
+    </div>
+    <div class="phone" aria-label="WhatsApp message preview">
+      <div class="bar"><div class="av">LP</div><div><b>ListingPilot</b><span>Business account</span></div></div>
+      <div class="chat"><div class="msg in">${esc(msg)}<span class="t">8:00 am</span></div></div>
+    </div>
+  </div>`;
+}
+
+/* ---------- 6 photo to listing ---------- */
+let chatFile = null, chatCtl = null;
+function renderPhoto(){
+  const avail = !!S.sample;
+  $("#tab-photo").innerHTML = `
+  <div class="head">
+    <div><h2>Send a photo on WhatsApp, get a listing back</h2>
+      <p class="lead">For staff in the godown or at a supplier: snap the product, add a short note in Hindi or English, and ListingPilot replies with a draft listing and a list of facts still needed.</p></div>
+  </div>
+  <div class="sumgrid" style="grid-template-columns:minmax(0,1fr) 340px">
+    <div class="tryside">
+      <div class="panel card">
+        <h3>Try it live with one of the client's products</h3>
+        <ol class="muted" style="font-size:.93rem"><li>Attach a product photo with the clip button (optional).</li><li>Type a short note, for example the material, size and price.</li><li>Send. The draft comes back in a few seconds.</li></ol>
+        <div class="label">Example notes</div>
+        <div class="chips-row">
+          <button data-ex="Ye cotton ki bedsheet hai, double bed, 2 pillow cover ke saath, price 1299">Hindi: cotton bedsheet</button>
+          <button data-ex="Handmade terracotta water bottle, 1 litre, natural clay, price 549">Terracotta bottle</button>
+          <button data-ex="Silver plated oxidised jhumka earrings for women, 2.5 inch long, price 399">Oxidised jhumka</button>
+        </div>
+        ${avail ? "" : `<p class="note">Live AI runs when this page is opened in Claude. In this view the chat shows a recorded example instead.</p>`}
+      </div>
+    </div>
+    <div class="phone">
+      <div class="bar"><div class="av">LP</div><div><b>ListingPilot</b><span>${avail ? "online" : "demo"}</span></div></div>
+      <div class="chat" id="chat" aria-live="polite"></div>
+      <div class="compose">
+        <input type="file" id="pfile" accept="image/jpeg,image/png,image/webp" hidden>
+        <button class="iconbtn ghost" id="clip" aria-label="Attach a product photo" ${avail && S.imgs ? "" : "hidden"}>📎</button>
+        <textarea id="pnote" placeholder="Describe the product" aria-label="Message"></textarea>
+        <button class="iconbtn" id="send" aria-label="Send">➤</button>
+      </div>
+    </div>
+  </div>`;
+  renderChat();
+  $("#tab-photo").querySelectorAll("[data-ex]").forEach(b => b.onclick = () => { $("#pnote").value = b.dataset.ex; $("#pnote").focus(); });
+  const clip = $("#clip"), fi = $("#pfile");
+  clip.onclick = () => fi.click();
+  fi.onchange = () => { chatFile = fi.files[0] || null; clip.style.background = chatFile ? "var(--accent-soft)" : ""; clip.textContent = chatFile ? "✓" : "📎"; };
+  $("#send").onclick = sendChat;
+  $("#pnote").onkeydown = e => { if (e.key === "Enter" && !e.shiftKey){ e.preventDefault(); sendChat(); } };
+}
+function renderChat(){
+  const el = $("#chat"); if (!el) return;
+  if (!S.chat.length){
+    S.chat = [
+      {who:"in", text:"Namaste! Send me a product photo and a short note, and I will draft the Amazon listing."}
+    ];
+    if (!S.sample){
+      S.chat.push({who:"out", text:"Ye cotton ki bedsheet hai, double bed, 2 pillow cover ke saath, price 1299"});
+      S.chat.push({who:"in", text:formatDraft({title:"Gulmohar Home 100% Cotton Double Bedsheet with 2 Pillow Covers, Floral Print, Breathable Bedsheet for Double Bed", bullets:["100% COTTON: Soft, breathable cotton for comfortable sleep in every season.","DOUBLE BED SET: Comes with 2 matching pillow covers.","EASY CARE: Machine washable."], keywords:["cotton bedsheet double","bedsheet with 2 pillow covers","floral bedsheet"], missing:["Bedsheet size in inches","Thread count","Colour","Care instructions"]})});
+    }
+  }
+  el.innerHTML = S.chat.map(m => `<div class="msg ${m.who}">${m.img ? `<img src="${m.img}" alt="Product photo sent">` : ""}${esc(m.text)}<span class="t">${m.t || "now"}</span></div>`).join("");
+  el.scrollTop = el.scrollHeight;
+}
+function formatDraft(r){
+  let s = "Draft listing ready\n\nTITLE\n" + r.title + "\n\nBULLETS\n" + (r.bullets || []).map(b => "• " + b).join("\n");
+  if (r.keywords?.length) s += "\n\nKEYWORDS\n" + r.keywords.join(", ");
+  if (r.missing?.length) s += "\n\nNEEDED BEFORE PUBLISHING\n" + r.missing.map(m => "• " + m).join("\n");
+  return s;
+}
+async function sendChat(){
+  const note = $("#pnote").value.trim();
+  if (!note && !chatFile) return;
+  if (!S.sample){ S.chat.push({who:"out", text:note}); S.chat.push({who:"in", text:"Live AI runs when this page is opened in Claude. Ask your IterativeTech contact for a live run."}); $("#pnote").value = ""; renderChat(); return; }
+  const img = chatFile ? URL.createObjectURL(chatFile) : null;
+  const file = chatFile;
+  S.chat.push({who:"out", text:note || "(photo)", img});
+  const typing = {who:"in", text:"Writing your listing…"}; S.chat.push(typing);
+  $("#pnote").value = ""; chatFile = null; renderPhoto();
+  const prompt = `A seller's staff member sent this product on WhatsApp${file ? " with the attached photo" : ""}. Their note (may be Hindi, Hinglish or English): "${note || "no note"}".
+Write an Amazon.in listing draft in English for the brand "${BRAND}". Use only what is stated in the note or clearly visible in the photo; never invent sizes, materials, certifications or offers.
+Reply with only JSON: {"title": string of 100-180 characters starting with "${BRAND}", "bullets": array of 4 strings each starting with a short CAPS label and a colon, "keywords": array of 5 lowercase search phrases, "missing": array of short names of facts Amazon will need that were not given}.`;
+  chatCtl = new AbortController();
+  try{
+    const opts = {modelTier:"quick", cache:false, signal:chatCtl.signal};
+    if (file && S.imgs) opts.images = file;
+    const r = await S.sample.json(prompt, opts);
+    if (!r || typeof r.title !== "string") throw {code:"invalid_json"};
+    typing.text = formatDraft(r);
+  }catch(e){
+    typing.text = errText(e);
+    if (e?.code === "not_granted" || e?.code === "sampling_disabled") S.sample = null;
+  }
+  renderChat();
+}
+
+function render(){
+  renderSteps();
+  if (S.tab === "catalogue") renderCatalogue();
+  if (S.tab === "ai") renderAI();
+  if (S.tab === "check") renderCheck();
+  if (S.tab === "publish") renderPublish();
+  if (S.tab === "summary") renderSummary();
+  if (S.tab === "photo") renderPhoto();
+}
+render();
+
+(async () => {
+  try{
+    const s = window.claude ? await window.claude.use("sample") : null;
+    if (s){
+      S.sample = s;
+      const lim = await s.limits().catch(() => null);
+      S.imgs = !!lim?.images;
+      if (S.tab === "ai" || S.tab === "photo") render();
+    }
+  }catch(e){}
+})();
+</script>
+
+</body></html>
