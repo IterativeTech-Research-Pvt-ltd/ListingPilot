@@ -684,6 +684,46 @@ class MeeshoAdapter:
                     val = img3
                 elif "image 4" in cn:
                     val = img4
+                elif "color" in cn or "colour" in cn:
+                    val = (
+                        p_attrs.get("Color")
+                        or p_attrs.get("Colour")
+                        or p_attrs.get("color")
+                        or p_attrs.get("colour")
+                    )
+                elif "fabric" in cn or "material" in cn:
+                    val = (
+                        p_attrs.get("Fabric")
+                        or p_attrs.get("Material")
+                        or p_attrs.get("fabric")
+                        or p_attrs.get("material")
+                    )
+                elif "generic name" in cn:
+                    val = (
+                        p_attrs.get("Generic Name")
+                        or template_info.get("category", "")
+                    )
+                elif "included components" in cn:
+                    val = p_attrs.get("Included") or p_attrs.get("Included Components")
+                elif "pillow length" in cn:
+                    val = "27"
+                elif "pillow width" in cn:
+                    val = "17"
+                elif "no. of pillow" in cn:
+                    var_low = str(p_attrs.get("Size") or "").lower()
+                    val = "1" if "single" in var_low else "2"
+                elif "bedsheet length" in cn or cn == "length size":
+                    var_low = str(p_attrs.get("Size") or "").lower()
+                    val = "108" if "king" in var_low or "108" in var_low else ("90" if "single" in var_low or "60" in var_low else "100")
+                elif "bedsheet width" in cn or cn == "width size":
+                    var_low = str(p_attrs.get("Size") or "").lower()
+                    val = "108" if "king" in var_low or "108" in var_low else ("60" if "single" in var_low or "60" in var_low else "90")
+                elif "product length (cm)" in cn or (("length" in cn) and "cm" in cn):
+                    var_low = str(p_attrs.get("Size") or "").lower()
+                    val = 274 if "king" in var_low else (228 if "single" in var_low else 254)
+                elif "product width (cm)" in cn or (("width" in cn) and "cm" in cn):
+                    var_low = str(p_attrs.get("Size") or "").lower()
+                    val = 274 if "king" in var_low else (152 if "single" in var_low else 228)
                 elif "product id" in cn or "style id" in cn:
                     # Style Code remains the same for size variants of the EXACT same design.
                     # Each standalone product in the catalog must have its own Style Code (e.g. p_sku).
