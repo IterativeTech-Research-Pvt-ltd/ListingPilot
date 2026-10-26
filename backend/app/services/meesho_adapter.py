@@ -685,7 +685,17 @@ class MeeshoAdapter:
                 elif "image 4" in cn:
                     val = img4
                 elif "product id" in cn or "style id" in cn:
-                    val = p_sku.split("-")[0] if "-" in p_sku else p_sku
+                    # Style Code remains the same for size variants of the EXACT same design.
+                    # Each standalone product in the catalog must have its own Style Code (e.g. p_sku).
+                    # Do NOT truncate by '-' (e.g. 'JBP-101' -> 'JBP') as that erroneously groups
+                    # different designs together as size variants of a single product, triggering
+                    # Meesho QC errors ('Attributes/Name/Images cannot be different for different sizes').
+                    val = (
+                        getattr(product, "style_id", None)
+                        or (p_attrs.get("Style Code") if isinstance(p_attrs, dict) else None)
+                        or (p_attrs.get("Style ID") if isinstance(p_attrs, dict) else None)
+                        or p_sku
+                    )
                 elif "sku id" in cn or "seller sku" in cn:
                     val = p_sku
                 elif "brand name" in cn or cn == "brand":
@@ -693,7 +703,13 @@ class MeeshoAdapter:
                 elif "product description" in cn:
                     val = full_desc
                 elif "group id" in cn:
-                    val = ""
+                    # Group ID is optional. If empty, Meesho treats the product as an independent catalog.
+                    val = (
+                        p_attrs.get("Group ID")
+                        or p_attrs.get("Group")
+                        if isinstance(p_attrs, dict)
+                        else None
+                    )
                 else:
                     # Dynamic attribute lookup from product.attributes
                     # Search for direct or fuzzy key matches
