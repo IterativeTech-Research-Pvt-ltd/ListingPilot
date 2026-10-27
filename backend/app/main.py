@@ -27,6 +27,9 @@ import os
 UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
+import time
+from fastapi import Request
+
 # Set up CORS
 app.add_middleware(
     CORSMiddleware,
@@ -35,6 +38,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    duration_ms = round((time.time() - start_time) * 1000, 1)
+    print(f"[{request.method}] {request.url.path} -> {response.status_code} ({duration_ms}ms)", flush=True)
+    return response
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
 app.mount("/static/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
