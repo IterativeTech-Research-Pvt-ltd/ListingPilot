@@ -133,8 +133,9 @@ Category Schema Guidelines (Amazon SP-API PTD):
 
         candidate_models = [
             configured_model,
-            "minimax/minimax-m3.1-flash",
+            "google/gemma-4-26b-a4b-it:free",
             "nvidia/nemotron-3.5-lightning:free",
+            "minimax/minimax-m3.1-flash",
             "liquid/lfm-2.5-2.6b:free",
             "recursive/flint-v1.0:free"
         ]
@@ -152,23 +153,32 @@ Category Schema Guidelines (Amazon SP-API PTD):
                     {"role": "user", "content": user_prompt}
                 ],
                 "temperature": 0.3,
-                "max_tokens": 1500
+                "max_tokens": 3000
             }
 
             try:
-                async with httpx.AsyncClient(timeout=18.0) as client:
+                async with httpx.AsyncClient(timeout=22.0) as client:
                     res = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
                     res.raise_for_status()
                     data = res.json()
                     choices = data.get("choices", [])
                     if choices and "message" in choices[0]:
-                        content = choices[0]["message"]["content"]
+                        msg = choices[0]["message"]
+                        content = msg.get("content")
+                        # Handle reasoning models where output or JSON was generated in reasoning
+                        if not content and msg.get("reasoning"):
+                            reasoning_text = msg["reasoning"]
+                            json_match = re.search(r"(\{\s*\"title\".*\})", reasoning_text, flags=re.DOTALL)
+                            if json_match:
+                                content = json_match.group(1)
+                        if not content or not isinstance(content, str) or not content.strip():
+                            continue
                         parsed = cls._parse_json_response(content, product, marketplace=marketplace)
                         if parsed and parsed.get("title"):
                             return parsed
             except httpx.HTTPStatusError as e:
                 print(f"OpenRouter status ({model_name}):", e.response.status_code)
-                print(f"OpenRouter response ({model_name}):", e.response.text[:1000])
+                print(f"OpenRouter response ({model_name}):", e.response.text[:500])
                 continue
             except httpx.RequestError as e:
                 print(f"OpenRouter network error ({model_name}):", e)
@@ -338,9 +348,16 @@ Category Schema Guidelines (Amazon SP-API PTD):
         return draft
 
     @classmethod
-    def _parse_json_response(cls, raw: str, product: Product, marketplace: str = "amazon") -> Dict[str, Any]:
-        clean = re.sub(r"^```json\s*", "", raw.strip(), flags=re.MULTILINE)
+    def _parse_json_response(cls, raw: Any, product: Product, marketplace: str = "amazon") -> Dict[str, Any]:
+        if not raw or not isinstance(raw, str) or not raw.strip():
+            return cls._fallback_generator(product, product.brand or settings.DEFAULT_BRAND, marketplace=marketplace)
+
+        clean = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
         clean = re.sub(r"```$", "", clean.strip(), flags=re.MULTILINE)
+        json_match = re.search(r"(\{.*\})", clean, flags=re.DOTALL)
+        if json_match:
+            clean = json_match.group(1)
+
         try:
             parsed = json.loads(clean)
             if len(parsed.get("title", "")) > 200:
