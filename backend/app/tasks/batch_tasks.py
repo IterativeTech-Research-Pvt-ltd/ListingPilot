@@ -92,69 +92,76 @@ def generate_batch_drafts_task(
                 "message": "No products found matching task filter.",
             }
 
+        target_marketplaces = ["amazon", "flipkart", "meesho"] if marketplace == "all" else [marketplace]
+        total_ops = total * len(target_marketplaces)
+
         generated = 0
         skipped = 0
         errors_list = []
+        op_count = 0
 
         for idx, product in enumerate(products):
-            # Update Celery task state with real-time percentage progress
-            percent = round(((idx + 1) / total) * 100, 1)
-            self.update_state(
-                state="PROGRESS",
-                meta={
-                    "current": idx + 1,
-                    "total": total,
-                    "percent": percent,
-                    "current_sku": product.sku,
-                    "marketplace": marketplace,
-                    "tenant_id": tenant_id,
-                }
-            )
+            for mp in target_marketplaces:
+                op_count += 1
+                # Update Celery task state with real-time percentage progress
+                percent = round((op_count / total_ops) * 100, 1)
+                self.update_state(
+                    state="PROGRESS",
+                    meta={
+                        "current": op_count,
+                        "total": total_ops,
+                        "percent": percent,
+                        "current_sku": product.sku,
+                        "marketplace": mp,
+                        "tenant_id": tenant_id,
+                    }
+                )
 
-            existing = db.query(ListingDraft).filter(
-                ListingDraft.product_id == product.id,
-                ListingDraft.marketplace == marketplace
-            ).first()
+                existing = db.query(ListingDraft).filter(
+                    ListingDraft.product_id == product.id,
+                    ListingDraft.marketplace == mp
+                ).first()
 
-            if existing and not overwrite:
-                skipped += 1
-                continue
+                if existing and not overwrite:
+                    skipped += 1
+                    continue
 
-            try:
-                # Generate AI listing content
-                content = _run_async(AIService.generate_listing(product, marketplace=marketplace))
-                rule_results = RuleEngine.evaluate(product, draft=content, marketplace=marketplace)
-                status = "draft"
+                try:
+                    # Generate AI listing content
+                    content = _run_async(AIService.generate_listing(product, marketplace=mp))
+                    rule_results = RuleEngine.evaluate(product, draft=content, marketplace=mp)
+                    status = "draft"
 
-                if existing:
-                    existing.title = content["title"]
-                    existing.bullets = content["bullets"]
-                    existing.description = content["description"]
-                    existing.keywords = content["keywords"]
-                    existing.status = status
-                    existing.is_approved = False
-                    existing.rule_results = rule_results
-                else:
-                    draft = ListingDraft(
-                        product_id=product.id,
-                        marketplace=marketplace,
-                        title=content["title"],
-                        bullets=content["bullets"],
-                        description=content["description"],
-                        keywords=content["keywords"],
-                        status=status,
-                        is_approved=False,
-                        rule_results=rule_results
-                    )
-                    db.add(draft)
+                    if existing:
+                        existing.title = content["title"]
+                        existing.bullets = content["bullets"]
+                        existing.description = content["description"]
+                        existing.keywords = content["keywords"]
+                        existing.status = status
+                        existing.is_approved = False
+                        existing.rule_results = rule_results
+                    else:
+                        draft = ListingDraft(
+                            product_id=product.id,
+                            marketplace=mp,
+                            title=content["title"],
+                            bullets=content["bullets"],
+                            description=content["description"],
+                            keywords=content["keywords"],
+                            status=status,
+                            is_approved=False,
+                            rule_results=rule_results
+                        )
+                        db.add(draft)
 
-                generated += 1
-            except Exception as e:
-                errors_list.append({
-                    "product_id": product.id,
-                    "sku": product.sku,
-                    "error": str(e)
-                })
+                    generated += 1
+                except Exception as e:
+                    errors_list.append({
+                        "product_id": product.id,
+                        "sku": product.sku,
+                        "marketplace": mp,
+                        "error": str(e)
+                    })
 
         db.commit()
 
@@ -162,11 +169,12 @@ def generate_batch_drafts_task(
             "success": True,
             "tenant_id": tenant_id,
             "marketplace": marketplace,
+            "marketplaces": target_marketplaces,
             "total_products": total,
             "generated": generated,
             "skipped": skipped,
             "errors": errors_list,
-            "message": f"Batch generation complete for tenant '{tenant_id or 'default'}': {generated} generated, {skipped} skipped, {len(errors_list)} errors.",
+            "message": f"Batch generation complete for tenant '{tenant_id or 'default'}': {generated} generated across {len(target_marketplaces)} channel(s), {skipped} skipped, {len(errors_list)} errors.",
         }
     except Exception as exc:
         db.rollback()

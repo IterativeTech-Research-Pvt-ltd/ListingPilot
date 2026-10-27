@@ -147,3 +147,12 @@ def test_batch_generation_endpoint(mock_generate):
     data = res.json()
     assert data["success"] is True
     assert data["generated"] >= 1
+
+    # Test batch generation across ALL marketplaces (Amazon + Flipkart + Meesho)
+    res_all = client.post("/api/v1/drafts/generate-batch?marketplace=all&overwrite=true")
+    assert res_all.status_code == 200
+    data_all = res_all.json()
+    assert data_all["success"] is True
+    assert data_all["marketplace"] == "all"
+    assert data_all["marketplaces"] == ["amazon", "flipkart", "meesho"]
+    assert data_all["generated"] >= 3

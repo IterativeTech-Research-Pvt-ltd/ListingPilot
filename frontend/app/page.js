@@ -342,7 +342,7 @@ export default function ListingPilotPhase3App() {
   // Modals & Batch
   const [showBatchModal, setShowBatchModal] = useState(false);
   const [batchCategory, setBatchCategory] = useState("All");
-  const [batchMarketplace, setBatchMarketplace] = useState("amazon");
+  const [batchMarketplace, setBatchMarketplace] = useState("all");
   const [batchOverwrite, setBatchOverwrite] = useState(false);
   const [isBatchRunning, setIsBatchRunning] = useState(false);
 
@@ -1143,7 +1143,15 @@ export default function ListingPilotPhase3App() {
 
   const handleRunBatch = async () => {
     setIsBatchRunning(true);
-    showToast("Batch Generation Started", `Generating AI listings for ${batchMarketplace.toUpperCase()} (Category: ${batchCategory})...`, "info");
+    const mpLabel = batchMarketplace === "all" 
+      ? "ALL Marketplaces (Amazon + Flipkart + Meesho)" 
+      : batchMarketplace.toUpperCase();
+    const catLabel = batchCategory === "All" ? "Entire Catalog" : batchCategory;
+    showToast(
+      "Batch Generation Started", 
+      `Generating AI listings for ${mpLabel} (${catLabel})...`, 
+      "info"
+    );
 
     try {
       const params = new URLSearchParams({
@@ -1158,56 +1166,77 @@ export default function ListingPilotPhase3App() {
 
       if (res.ok) {
         const result = await res.json();
-        showToast("Batch Generation Complete! ✨", `${result.generated} drafts generated for ${batchMarketplace.toUpperCase()}.`, "success");
+        const successMsg = batchMarketplace === "all"
+          ? `${result.generated} drafts generated across ALL 3 channels (Amazon, Flipkart, Meesho)!`
+          : `${result.generated} drafts generated for ${batchMarketplace.toUpperCase()}.`;
+        showToast("Batch Generation Complete! ✨", successMsg, "success");
         fetchAllData();
       } else {
         throw new Error("Batch API failed");
       }
     } catch {
-      // Local batch simulation
+      // Local batch simulation fallback
       const targetProducts = batchCategory === "All" 
         ? products 
         : products.filter(p => p.category === batchCategory);
 
-      const newDrafts = targetProducts.map((p, idx) => ({
-        id: 300 + idx,
-        product_id: p.id,
-        marketplace: batchMarketplace,
-        title: batchMarketplace === "meesho" 
-          ? `Gulmohar Home ${p.name}`.slice(0, 95)
-          : batchMarketplace === "flipkart"
-          ? `Gulmohar Home ${p.name} (${p.category})`.slice(0, 115)
-          : `Gulmohar Home ${p.name} - ${p.category} (${p.brand})`,
-        bullets: [
-          `AUTHENTIC HANDCRAFTED DESIGN: Specially curated for Gulmohar Home connoisseurs.`,
-          `PREMIUM MATERIALS: ${Object.entries(p.attributes || {}).map(([k, v]) => `${k}: ${v}`).join(", ") || "Pure organic fabrics and metals."}`,
-          `OPTIMAL DIMENSIONS: Designed to fit standard Indian households and altars.`,
-          `CARE RECOMMENDATIONS: Spot clean or gentle wash for lasting luster and vibrancy.`
-        ],
-        description: `Discover artisanal quality with Gulmohar Home's ${p.name}. Direct from artisan clusters.`,
-        keywords: [p.category.toLowerCase(), p.brand.toLowerCase(), "handcrafted"],
-        status: "draft",
-        is_approved: false,
-        external_listing_id: null,
-        rule_results: {
-          score: 24,
-          max_score: 25,
-          quality_rating: "Excellent",
-          has_errors: false,
-          checks: [
-            { rule: `${batchMarketplace.toUpperCase()} Schema Check`, pass: true, detail: "Compliant" },
-            { rule: "Banned Claims Check", pass: true, detail: "Passed" }
-          ]
-        }
-      }));
+      const targetMps = batchMarketplace === "all" 
+        ? ["amazon", "flipkart", "meesho"] 
+        : [batchMarketplace];
+
+      const newDrafts = [];
+      let draftIdCounter = Date.now();
+
+      targetProducts.forEach(p => {
+        targetMps.forEach(mp => {
+          newDrafts.push({
+            id: draftIdCounter++,
+            product_id: p.id,
+            marketplace: mp,
+            title: mp === "meesho" 
+              ? `Gulmohar Home ${p.name}`.slice(0, 95)
+              : mp === "flipkart"
+              ? `Gulmohar Home ${p.name} (${p.category})`.slice(0, 115)
+              : `Gulmohar Home ${p.name} - ${p.category} (${p.brand})`,
+            bullets: [
+              `AUTHENTIC HANDCRAFTED DESIGN: Specially curated for Gulmohar Home connoisseurs.`,
+              `PREMIUM MATERIALS: ${Object.entries(p.attributes || {}).map(([k, v]) => `${k}: ${v}`).join(", ") || "Pure organic fabrics and metals."}`,
+              `OPTIMAL DIMENSIONS: Designed to fit standard Indian households and altars.`,
+              `CARE RECOMMENDATIONS: Spot clean or gentle wash for lasting luster and vibrancy.`
+            ],
+            description: `Discover artisanal quality with Gulmohar Home's ${p.name}. Direct from artisan clusters.`,
+            keywords: [p.category.toLowerCase(), p.brand.toLowerCase(), "handcrafted"],
+            status: "draft",
+            is_approved: false,
+            external_listing_id: null,
+            rule_results: {
+              score: 24,
+              max_score: 25,
+              quality_rating: "Excellent",
+              has_errors: false,
+              checks: [
+                { rule: `${mp.toUpperCase()} Schema Check`, pass: true, detail: "Compliant" },
+                { rule: "Banned Claims Check", pass: true, detail: "Passed" }
+              ]
+            }
+          });
+        });
+      });
 
       setDrafts(prev => {
-        const ids = new Set(newDrafts.map(d => d.product_id));
-        const retained = prev.filter(d => !(ids.has(d.product_id) && d.marketplace === batchMarketplace));
+        const targetMpSet = new Set(targetMps);
+        const targetProdIds = new Set(targetProducts.map(p => p.id));
+        const retained = prev.filter(d => !(targetProdIds.has(d.product_id) && targetMpSet.has(d.marketplace)));
         return [...newDrafts, ...retained];
       });
-      setSelectedDraft(newDrafts[0]);
-      showToast("Batch Generated", `${newDrafts.length} AI drafts ready for ${batchMarketplace.toUpperCase()}.`, "success");
+      if (newDrafts.length > 0) {
+        setSelectedDraft(newDrafts[0]);
+      }
+      showToast(
+        "Batch Generated", 
+        `${newDrafts.length} AI drafts ready across ${batchMarketplace === "all" ? "All Channels" : batchMarketplace.toUpperCase()}.`, 
+        "success"
+      );
     } finally {
       setIsBatchRunning(false);
       setShowBatchModal(false);
@@ -3578,7 +3607,7 @@ export default function ListingPilotPhase3App() {
             </div>
             <div className="modal-body">
               <p style={{ fontSize: "0.86rem", color: "var(--muted)", marginBottom: "16px" }}>
-                Generate AI titles, bullets, descriptions, and rule check scores across your target marketplace.
+                Generate AI titles, bullets, descriptions, and rule check scores across all channels or a target marketplace.
               </p>
 
               <div className="draft-field">
@@ -3588,6 +3617,7 @@ export default function ListingPilotPhase3App() {
                   value={batchMarketplace}
                   onChange={(e) => setBatchMarketplace(e.target.value)}
                 >
+                  <option value="all">🌐 All Marketplaces (Amazon + Flipkart + Meesho)</option>
                   <option value="amazon">Amazon.in (SP-API)</option>
                   <option value="flipkart">Flipkart (Listings v3)</option>
                   <option value="meesho">Meesho (Supplier Catalog File)</option>
@@ -3601,7 +3631,8 @@ export default function ListingPilotPhase3App() {
                   value={batchCategory}
                   onChange={(e) => setBatchCategory(e.target.value)}
                 >
-                  {categories.map(c => (
+                  <option value="All">📦 All Categories (Entire Catalog)</option>
+                  {dynamicCategories.filter(c => c !== "All").map(c => (
                     <option key={c} value={c}>{c}</option>
                   ))}
                 </select>

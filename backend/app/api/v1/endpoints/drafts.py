@@ -99,7 +99,7 @@ async def generate_draft(
 
 @router.post("/generate-batch", summary="Generate AI drafts for all (or filtered) products in batch")
 async def generate_batch(
-    marketplace: str = Query("amazon", pattern="^(amazon|flipkart|meesho)$"),
+    marketplace: str = Query("amazon", pattern="^(amazon|flipkart|meesho|all)$"),
     category: Optional[str] = Query(None, description="Filter by category"),
     overwrite: bool = Query(False, description="Re-generate existing drafts"),
     db: Session = Depends(get_db)
@@ -120,59 +120,62 @@ async def generate_batch(
     generated = 0
     skipped = 0
     errors_list = []
+    target_marketplaces = ["amazon", "flipkart", "meesho"] if marketplace == "all" else [marketplace]
 
     for product in products:
-        # Check if draft already exists
-        existing = db.query(ListingDraft).filter(
-            ListingDraft.product_id == product.id,
-            ListingDraft.marketplace == marketplace
-        ).first()
+        for mp in target_marketplaces:
+            # Check if draft already exists
+            existing = db.query(ListingDraft).filter(
+                ListingDraft.product_id == product.id,
+                ListingDraft.marketplace == mp
+            ).first()
 
-        if existing and not overwrite:
-            skipped += 1
-            continue
+            if existing and not overwrite:
+                skipped += 1
+                continue
 
-        try:
-            content = await AIService.generate_listing(product, marketplace=marketplace)
-            rule_results = RuleEngine.evaluate(product, draft=content, marketplace=marketplace)
-            status = "draft"
+            try:
+                content = await AIService.generate_listing(product, marketplace=mp)
+                rule_results = RuleEngine.evaluate(product, draft=content, marketplace=mp)
+                status = "draft"
 
-            if existing:
-                existing.title = content["title"]
-                existing.bullets = content["bullets"]
-                existing.description = content["description"]
-                existing.keywords = content["keywords"]
-                existing.status = status
-                existing.is_approved = False
-                existing.rule_results = rule_results
-            else:
-                draft = ListingDraft(
-                    product_id=product.id,
-                    marketplace=marketplace,
-                    title=content["title"],
-                    bullets=content["bullets"],
-                    description=content["description"],
-                    keywords=content["keywords"],
-                    status=status,
-                    is_approved=False,
-                    rule_results=rule_results
-                )
-                db.add(draft)
+                if existing:
+                    existing.title = content["title"]
+                    existing.bullets = content["bullets"]
+                    existing.description = content["description"]
+                    existing.keywords = content["keywords"]
+                    existing.status = status
+                    existing.is_approved = False
+                    existing.rule_results = rule_results
+                else:
+                    draft = ListingDraft(
+                        product_id=product.id,
+                        marketplace=mp,
+                        title=content["title"],
+                        bullets=content["bullets"],
+                        description=content["description"],
+                        keywords=content["keywords"],
+                        status=status,
+                        is_approved=False,
+                        rule_results=rule_results
+                    )
+                    db.add(draft)
 
-            generated += 1
-        except Exception as e:
-            errors_list.append({"product_id": product.id, "sku": product.sku, "error": str(e)})
+                generated += 1
+            except Exception as e:
+                errors_list.append({"product_id": product.id, "sku": product.sku, "marketplace": mp, "error": str(e)})
 
     db.commit()
 
     return {
         "success": True,
         "marketplace": marketplace,
+        "marketplaces": target_marketplaces,
         "total_products": len(products),
         "generated": generated,
         "skipped": skipped,
         "errors": errors_list,
-        "message": f"Batch generation complete: {generated} drafts generated, {skipped} skipped, {len(errors_list)} errors."
+        "message": f"Batch generation complete: {generated} drafts generated across {len(target_marketplaces)} channel(s), {skipped} skipped, {len(errors_list)} errors."
     }
 
 
@@ -180,7 +183,7 @@ async def generate_batch(
 
 @router.post("/tasks/generate-batch", summary="Dispatch background AI batch generation (Celery/Redis)")
 def dispatch_generate_batch_task(
-    marketplace: str = Query("amazon", pattern="^(amazon|flipkart|meesho)$"),
+    marketplace: str = Query("amazon", pattern="^(amazon|flipkart|meesho|all)$"),
     category: Optional[str] = Query(None, description="Filter by category"),
     overwrite: bool = Query(False, description="Re-generate existing drafts"),
     tenant_id: Optional[str] = Query(None, description="Tenant / Brand ID for multi-tenant isolation"),
