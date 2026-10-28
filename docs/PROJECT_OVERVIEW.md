@@ -63,7 +63,7 @@
 | Celery background jobs | **Built**; falls back to in-process eager execution when Redis is offline |
 | Reports | Quality, pipeline and rejection metrics **built**; the time-per-listing baseline is **not captured** |
 | Self-serve admin | Brand voice, banned claims and masked credentials **built**; rule limits, template upload and email alerts **not yet** |
-| Authentication / login | **Not built** (the PRD expects one login) |
+| Authentication / login | **Not built, and deferred by design** (PRD/SRS v1.1 single-seller amendment); MVP must run locally or behind VPN / IP allowlist / gateway password |
 | Tests | **35 / 35 passing** (`pytest backend/tests`, 9.8 s) |
 
 ---
@@ -718,7 +718,11 @@ Legend: ✅ done · 🟡 partial · ❌ not started
 | **FK-2** | Price and stock via Flipkart | ❌ | Stub |
 | **MSH-1** | Fill Meesho templates | ✅ | 4 official templates plus synthetic fallback; pilot categories such as Pooja items, Kurtas, Planters and Quilts still need their official templates |
 | **MSH-2** | No Meesho stock/order sync | ✅ | By design |
-| PRD §4 | One login | ❌ | No authentication at all |
+| PRD §4 | One login | Deferred | Moved to the Auth phase by the v1.1 amendment (`ListingPilot_PRD_SRS_v1.0.md`) |
+| v1.1 FR-AD-07 | Auth-ready data layer (`workspace_id`, `user_id` on "who" fields, workspace context on jobs) | ❌ | No `workspace_id` / `user_id` columns yet; Celery `tenant_id` filters by brand only |
+| v1.1 FR-AD-03 | Audit log | ❌ | Not built |
+| v1.1 FR-AD-06 | First-run Setup wizard | ❌ | Settings tab exists; no first-run flow |
+| v1.1 FR-AD-08 | Encrypted credentials, per workspace | ❌ | Plain-text JSON file, global |
 | SRS §8 | Listing, Rejection, Rule set, Credential entities | 🟡 | Folded into drafts / JSON file; no separate tables |
 | F10 | Training and user guide | 🟡 | In-app Operations Manual exists; training sessions not yet held |
 
@@ -745,7 +749,7 @@ Legend: ✅ done · 🟡 partial · ❌ not started
 ### 17.1 Security (fix first)
 
 1. **Fixed (28 Oct):** `backend/app/data/dynamic_settings.json` used to be tracked in git. It only ever held dummy test credentials, written there because `test_phase4_endpoints.py` wrote to the real file. It is now gitignored and created on first run with empty credentials; tests use a temporary file (`LISTINGPILOT_SETTINGS_FILE`); `.env` secrets are no longer copied into it; the hard-coded Neon hostname fallback in `database.py` is gone.
-2. **No authentication.** Anyone who can reach the API can read settings, change credentials or publish listings.
+2. **No authentication** (deferred by the v1.1 amendment). Anyone who can reach the API can read settings, change credentials or publish listings, so until the Auth phase the app must run locally or behind a VPN, IP allowlist or reverse-proxy password.
 3. **Credentials are stored in plain text** in a JSON file on disk. They should be encrypted at rest (e.g. Fernet with a key from env) or moved to a secrets store.
 4. `/catalogue/upload-image` checks the file extension but not the size or the actual content type.
 
@@ -797,7 +801,9 @@ Legend: ✅ done · 🟡 partial · ❌ not started
 - [ ] Connect real Amazon SP-API credentials; verify LWA, the Listings Items PUT, and **poll submission status** to capture the real ASIN and issues.
 - [ ] Implement AMZ-2: price and stock via Listings Items PATCH (`purchasable_offer`, `fulfillment_availability`).
 - [ ] Use the live Product Type Definitions schema (`fetch_live_ptd_schema`) to validate required attributes per product type.
-- [ ] Add simple single-user login (session or JWT) to protect the dashboard and API.
+- [ ] No login in MVP (v1.1 amendment): deploy locally or behind VPN / IP allowlist / reverse-proxy password.
+- [ ] Auth-ready scaffolding (v1.1): `workspace_id` on every table, `user_id` in every "who" field, workspace/user context through the service layer and Celery payloads (needs Alembic migrations).
+- [ ] Audit log (FR-AD-03), first-run Setup wizard (FR-AD-06), encrypted per-workspace credentials (FR-AD-08).
 - [ ] Baseline capture: let the user enter current listings/month and minutes per listing; time draft→approve in the app; show baseline vs pilot in Reports (RPT-1).
 - [ ] Remove the random stub rejection, or put it behind a flag.
 - [ ] Switch the dashboard's batch flow to Celery tasks with a progress bar.

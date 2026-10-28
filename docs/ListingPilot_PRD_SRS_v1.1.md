@@ -4,7 +4,7 @@
 
 |                  |                             |
 | ---------------- | --------------------------- |
-| **Version**      | 1.0 (consolidated)          |
+| **Version**      | 1.1 (single-seller MVP)     |
 | **Date**         | 28 October 2026             |
 | **Status**       | Draft for review            |
 | **Marketplaces** | Amazon.in, Flipkart, Meesho |
@@ -17,11 +17,79 @@
 | 0.2     | AI image generation, Meesho shipping-aware images, conditional/category-specific field engine      |
 | 0.3     | Analysis of official Meesho templates (T-shirts, Shirts, Sneakers, Bedsheets); Meesho adapter spec |
 | 0.4     | Decision to bundle Meesho templates in the codebase; seller uploads filled files manually          |
-| 1.0     | Consolidated document (this file)                                                                  |
+| 1.0     | Consolidated document                                                                              |
+| 1.1     | Amendment: single-seller MVP; auth, multi-user, RBAC and agency mode deferred to an Auth phase     |
+
+---
+
+## Amendment v1.1 — Single-seller mode (MVP)
+
+This amendment overrides any conflicting text in v1.0. The affected sections below have been updated to match and are marked _(v1.1)_.
+
+### Decision
+
+The MVP supports exactly one seller (one business, one operator). Authentication, multiple users, roles, teams and agency/multi-client mode are deferred to a later phase.
+
+### What changes in the journey
+
+- **Stage 1 becomes "Setup"** (no signup/login): business profile, brands, channel connections, preferences. Shown as a first-run wizard and editable later in Settings.
+- **Stage 6** loses maker-checker approval; the seller approves their own listings.
+- Everything else (stages 2–8) is unchanged.
+
+### Requirements moved out of MVP
+
+| ID          | Requirement                            | New status                                                       |
+| ----------- | -------------------------------------- | ---------------------------------------------------------------- |
+| FR-AD-01    | Multi-tenant workspaces with RBAC      | Deferred (Auth phase)                                            |
+| FR-AD-02    | Agency mode                            | Deferred                                                         |
+| FR-VR-05    | Maker-checker approvals                | Deferred                                                         |
+| FR-SHP-05   | Cross-seller shipping-test ranking     | Deferred; MVP ranks using the seller's own tests only            |
+| FR-TL-09    | Cross-seller error-spike detection     | Reduced: detect spikes within the single seller's own imports    |
+| NFR Security | SSO                                   | Deferred                                                         |
+
+### Requirements kept (still valuable for one seller)
+
+- **FR-AD-03 Audit log:** records every publish, export, AI generation and fact change. Useful for debugging and becomes the basis of per-user history later.
+- **FR-AD-04 Admin-editable rule sets:** the seller (or you, as operator) can edit channel rules.
+- **Credential encryption:** Amazon SP-API refresh tokens and Flipkart secrets are still encrypted at rest and never sent to the frontend.
+
+### Build for auth later (non-negotiable now)
+
+To avoid a painful migration when auth is added:
+
+- Every table carries a `workspace_id` (single fixed value in MVP).
+- Every "who" field (`verified_by`, `approved_by`, `confirmed_by`, `editor`) stores a `user_id`, using one fixed default user in MVP.
+- All data access goes through a single service layer that already accepts a workspace/user context, even though it's constant today.
+- Marketplace connections are stored per workspace, not globally.
+- Background jobs (exports, generation, publishing) carry `workspace_id` in their payloads.
+
+### Deployment constraint while there's no auth
+
+An app with no login must not be openly reachable on the internet, because it holds marketplace credentials and can publish listings. For the MVP, run it in one of these ways:
+
+- locally on the seller's machine, or
+- on a private server reachable only via VPN / IP allowlist, or
+- behind a simple gateway-level protection (e.g., a single shared password at the reverse proxy).
+
+This is an interim measure, replaced by proper authentication in the Auth phase.
+
+### Personas and metrics
+
+- Primary MVP persona: a single D2C brand owner or catalogue operator managing their own catalogue.
+- Agency manager persona deferred.
+- "Weekly active sellers" metric replaced by per-seller outcomes: time-to-list, first-upload acceptance rate, AI acceptance rate.
+
+### Roadmap update
+
+- Phase 1 (MVP): single-seller, as above.
+- New **Auth phase** (before or alongside v1.0): login, user accounts, workspaces, RBAC, maker-checker, audit per user, SSO later.
+- Agency mode and cross-seller learning follow the Auth phase.
 
 ---
 
 ## Table of contents
+
+- Amendment v1.1 — Single-seller mode (MVP)
 
 1. Executive summary
 2. Problem statement
@@ -192,17 +260,22 @@ ListingPilot solves this with a single **Master Catalogue** acting as the knowle
 - Order management, multi-warehouse inventory sync, repricing, ads, returns handling, accounting (integrate with OMS tools later).
 - Browser automation / RPA of Flipkart or Meesho seller panels (ToS risk).
 - Additional marketplaces (Myntra, Ajio, JioMart, ONDC) — deferred to v2; architecture must support them.
+- _(v1.1)_ Login, multiple users, roles, teams, SSO and agency/multi-client mode — deferred to the Auth phase. The MVP serves one seller.
 
 ### 4.3 Personas
 
-| Persona                                | Profile                                              | Key pain                                     |
-| -------------------------------------- | ---------------------------------------------------- | -------------------------------------------- |
-| Small D2C brand owner (primary)        | 50–500 SKUs; fashion, home, beauty; lists personally | Rewriting for 3 platforms; opaque rejections |
-| Catalogue ops executive (primary)      | 1,000–20,000 SKUs at a brand/agency                  | Template hell; version drift; bulk fixes     |
-| Agency manager (secondary)             | Multiple client brands                               | Multi-tenant workspaces, approvals, audit    |
-| Meesho reseller/wholesaler (secondary) | Low price points, high churn, minimal photography    | Speed, image cleanup, shipping cost          |
+_(v1.1)_ The MVP serves one seller. The primary MVP persona is a single D2C brand owner or catalogue operator managing their own catalogue.
+
+| Persona                                | Profile                                              | Key pain                                     | MVP (v1.1)              |
+| -------------------------------------- | ---------------------------------------------------- | -------------------------------------------- | ----------------------- |
+| Small D2C brand owner (primary)        | 50–500 SKUs; fashion, home, beauty; lists personally | Rewriting for 3 platforms; opaque rejections | Primary                 |
+| Catalogue ops executive (primary)      | 1,000–20,000 SKUs at a brand/agency                  | Template hell; version drift; bulk fixes     | Primary (own catalogue) |
+| Agency manager (secondary)             | Multiple client brands                               | Multi-tenant workspaces, approvals, audit    | Deferred (after Auth)   |
+| Meesho reseller/wholesaler (secondary) | Low price points, high churn, minimal photography    | Speed, image cleanup, shipping cost          | Supported (single seller) |
 
 ### 4.4 Success metrics (6 months post-launch)
+
+_(v1.1)_ Metrics are measured per seller. The adoption metric "sellers publishing to ≥ 2 channels weekly" is replaced by per-seller outcomes.
 
 | Metric                                                        | Target                  |
 | ------------------------------------------------------------- | ----------------------- |
@@ -211,7 +284,6 @@ ListingPilot solves this with a single **Master Catalogue** acting as the knowle
 | Flipkart/Meesho first-upload acceptance                       | ≥ 80%                   |
 | AI-written fields accepted without edit                       | ≥ 70%                   |
 | AI factual-error rate (audit sample)                          | < 1%                    |
-| Sellers publishing to ≥ 2 channels weekly                     | Leading adoption metric |
 
 ---
 
@@ -270,9 +342,14 @@ ListingPilot solves this with a single **Master Catalogue** acting as the knowle
 | TemplateField                | Compiled template fields         | template_id, column, label, description, required, unit, allowed_values[], master_attribute_key                                                                                             |
 | ExportBatch                  | Generated files                  | template_id, rows, file_ref, status (generated/uploaded/errors_imported/live), error_rows                                                                                                   |
 | MeeshoErrorDictionary        | Learned rejection map            | message_pattern, field, fix_suggestion, occurrence_count                                                                                                                                    |
+| Workspace _(v1.1)_           | Tenant boundary                  | workspace_id, business profile, preferences; exactly one row in MVP                                                                                                                         |
+| User _(v1.1)_                | Actor for "who" fields           | user_id, workspace_id, display name; one fixed default user in MVP                                                                                                                          |
+| ChannelConnection _(v1.1)_   | Marketplace credentials          | workspace_id, channel, encrypted credentials, status, last_verified_at, last_sync_at                                                                                                       |
+| AuditEvent _(v1.1)_          | Audit log (FR-AD-03)             | workspace_id, user_id, action (publish/export/ai_generation/fact_change/approval), entity, before/after, timestamp                                                                         |
 
 ### 7.2 Design rules
 
+- _(v1.1)_ **Auth-ready from day one.** Every table carries `workspace_id` (a single fixed value in MVP). Every "who" field (`verified_by`, `approved_by`, `confirmed_by`, `editor`) stores a `user_id` (one fixed default user in MVP). All data access goes through one service layer that accepts a workspace/user context. Marketplace connections are stored per workspace, never globally. Background job payloads carry `workspace_id`.
 - Every AttributeValue carries **provenance and confidence**; low-confidence AI values cannot publish until verified.
 - A **master attribute dictionary** is the canonical vocabulary; per-channel mappings translate to channel enums. Confirmed mappings are reusable rules.
 - ContentVersion and generated images reference the facts they rely on; changing a fact marks dependent content **stale**.
@@ -713,7 +790,7 @@ Seller uploads Meesho's processed file (ERROR STATUS/MESSAGE) → rows matched b
 
 ## 16. Functional requirements
 
-Priority: **P0** = MVP · **P1** = v1.0 · **P2** = later.
+Priority: **P0** = MVP · **P1** = v1.0 · **P2** = later · **Auth** = deferred to the Auth phase _(v1.1)_.
 
 ### 16.1 Master Catalogue
 
@@ -806,7 +883,7 @@ Priority: **P0** = MVP · **P1** = v1.0 · **P2** = later.
 | FR-SHP-02 | Packaging advisor                                           | P1  |
 | FR-SHP-03 | 8–12 compliant presentation variants (uniform scaling only) | P0  |
 | FR-SHP-04 | Record observed charges (form/OCR)                          | P0  |
-| FR-SHP-05 | Opt-in anonymised cross-seller ranking                      | P1  |
+| FR-SHP-05 | Opt-in anonymised cross-seller ranking _(v1.1: deferred until after Auth; MVP ranks using the seller's own tests only)_ | Auth |
 | FR-SHP-06 | Drift detection                                             | P2  |
 | FR-SHP-07 | Lock declared weight/dims to master                         | P0  |
 | FR-SHP-08 | No automated Supplier Panel interaction                     | P0  |
@@ -823,7 +900,7 @@ Priority: **P0** = MVP · **P1** = v1.0 · **P2** = later.
 | FR-TL-06 | Two-step export wizard (image links before sheet)               | P0  |
 | FR-TL-07 | Export ZIP per category + upload checklist                      | P0  |
 | FR-TL-08 | Freshness status and staleness warnings                         | P0  |
-| FR-TL-09 | Cross-seller error-spike detection → ops alert                  | P1  |
+| FR-TL-09 | Error-spike detection → alert _(v1.1: reduced to spikes within the single seller's own imports; cross-seller detection deferred)_ | P1  |
 | FR-TL-10 | Seller-override template upload, on-the-fly compile, ops review | P1  |
 | FR-TL-11 | Log unsupported-category requests                               | P1  |
 | FR-MT-01 | Runtime parsing of seller-uploaded templates (override path)    | P1  |
@@ -846,7 +923,7 @@ Priority: **P0** = MVP · **P1** = v1.0 · **P2** = later.
 | FR-VR-02 | Variant completeness before first Flipkart export        | P0  |
 | FR-VR-03 | Duplicate detection (catalogue and prior Meesho exports) | P0  |
 | FR-VR-04 | Typed manual tasks with owner, due date, blocking flag   | P0  |
-| FR-VR-05 | Maker-checker approvals                                  | P1  |
+| FR-VR-05 | Maker-checker approvals _(v1.1: deferred; in MVP the seller approves their own listings)_ | Auth |
 | FR-VR-06 | Master vs channel diff view                              | P1  |
 
 ### 16.10 Publishing & Feedback
@@ -868,11 +945,14 @@ Priority: **P0** = MVP · **P1** = v1.0 · **P2** = later.
 
 | ID       | Requirement                                               | P   |
 | -------- | --------------------------------------------------------- | --- |
-| FR-AD-01 | Multi-tenant workspaces with RBAC                         | P0  |
-| FR-AD-02 | Agency mode                                               | P1  |
-| FR-AD-03 | Audit log (publishes, approvals, AI generations, exports) | P0  |
-| FR-AD-04 | Admin-editable channel rule sets                          | P0  |
-| FR-AD-05 | Usage metering                                            | P1  |
+| FR-AD-01 | Multi-tenant workspaces with RBAC _(v1.1: deferred)_                                          | Auth |
+| FR-AD-02 | Agency mode _(v1.1: deferred until after Auth)_                                               | Auth |
+| FR-AD-03 | Audit log (publishes, exports, AI generations, fact changes, approvals)                       | P0   |
+| FR-AD-04 | Admin-editable channel rule sets (seller or operator)                                         | P0   |
+| FR-AD-05 | Usage metering                                                                                | P1   |
+| FR-AD-06 | _(v1.1)_ First-run Setup wizard (business profile, brands, channel connections, preferences); editable later in Settings | P0   |
+| FR-AD-07 | _(v1.1)_ Auth-ready data layer: `workspace_id` on every table, `user_id` in every "who" field, workspace/user context on all service calls and job payloads | P0   |
+| FR-AD-08 | _(v1.1)_ Marketplace credentials encrypted at rest, stored per workspace, never sent to the frontend | P0   |
 
 ---
 
@@ -883,11 +963,12 @@ Priority: **P0** = MVP · **P1** = v1.0 · **P2** = later.
 | Performance       | Single-SKU content for 3 channels < 30 s (p95); 1,000 SKUs < 1 h; 5,000-row template export < 2 min; image variant generation < 60 s per SKU (p95) |
 | Scalability       | 100k variants and 1M media assets per workspace; horizontally scalable workers                                                                     |
 | Reliability       | Idempotent, resumable jobs; no double submission; 99.5% uptime                                                                                     |
-| Security          | Marketplace credentials encrypted (KMS), never exposed to frontend; TLS; SSO (P2)                                                                  |
+| Security          | Marketplace credentials (Amazon SP-API refresh tokens, Flipkart secrets) encrypted at rest (KMS), never exposed to frontend; TLS. _(v1.1)_ SSO deferred to the Auth phase |
+| Deployment _(v1.1)_ | Until auth exists, the app must not be openly reachable on the internet: run it locally, on a private server behind VPN / IP allowlist, or behind gateway-level protection (e.g., a shared password at the reverse proxy) |
 | Privacy           | DPDP Act 2023 compliance; no training on seller data without opt-in; India data residency preferred; shipping-test sharing opt-in and anonymised   |
 | AI accountability | Every generation logged (model, prompt version, inputs, grounding facts) and reproducible                                                          |
 | File fidelity     | Exported templates byte-compatible with originals except data cells                                                                                |
-| Usability         | First product to 3 channels within 30 min of signup; mobile-responsive review queue and photo capture                                              |
+| Usability         | First product to 3 channels within 30 min of first-run Setup _(v1.1)_; mobile-responsive review queue and photo capture                             |
 | Maintainability   | Rules as data; stable adapter interface; template refresh via PR                                                                                   |
 | Observability     | Per-channel dashboards (volume, acceptance, top errors); rejection-spike alerts; template freshness dashboard                                      |
 
@@ -913,7 +994,7 @@ Ingestion → **Master Catalogue** → Taxonomy & Mapping + Flags/Rules → AI C
 | Schema validation | Ajv / jsonschema                                                                      | Amazon payload validation                          |
 | Excel             | openpyxl (preserve validations/formatting)                                            | Write into original templates                      |
 | Template compiler | CI job (Python)                                                                       | Compile, diff, test bundled templates              |
-| Auth              | Clerk/Auth0 or Keycloak                                                               | Multi-tenant RBAC                                  |
+| Auth              | _(v1.1)_ None in MVP (gateway-level protection only); Clerk/Auth0 or Keycloak in the Auth phase | Multi-tenant RBAC once Auth lands       |
 
 ### 18.3 Key technical decisions
 
@@ -921,6 +1002,7 @@ Ingestion → **Master Catalogue** → Taxonomy & Mapping + Flags/Rules → AI C
 - Bundled raw templates are the source of truth; compiled JSON for logic; outputs written into copies of raw files.
 - Deterministic validation wraps every AI output.
 - No scraping; no seller-panel automation.
+- _(v1.1)_ Single workspace and single default user in MVP, but the schema, service layer and job payloads are workspace/user-aware so the Auth phase needs no data migration.
 
 ---
 
@@ -943,6 +1025,8 @@ Ingestion → **Master Catalogue** → Taxonomy & Mapping + Flags/Rules → AI C
 | Wrong category selected in Meesho panel       | Rejection                    | Category path printed per file in checklist                                    |
 | Template redistribution terms                 | Partner/legal issue          | Review Meesho supplier terms / partner team before launch                      |
 | SP-API rate limits                            | Slow publishing              | Feeds, queueing                                                                |
+| _(v1.1)_ No-login app exposed to the internet | Credential theft; unauthorised publishing | Local, VPN/IP-allowlisted or gateway-password deployment only until Auth phase |
+| _(v1.1)_ Auth retrofitted later               | Costly data migration        | `workspace_id` / `user_id` scaffolding from day one (FR-AD-07)                 |
 
 ---
 
@@ -959,6 +1043,9 @@ Ingestion → **Master Catalogue** → Taxonomy & Mapping + Flags/Rules → AI C
 
 ### Phase 1 — MVP (10–12 weeks)
 
+_(v1.1)_ Single-seller: one business, one operator, no login. Deployed locally or behind VPN / IP allowlist / gateway password.
+
+- First-run Setup wizard (business profile, brands, channel connections, preferences); auth-ready data layer; audit log; encrypted credentials.
 - Master Catalogue, flags, dynamic forms, CSV import, AI extraction.
 - Classification and mapping; AI content for all 3 channels.
 - Media Studio basics: SoT, cleanup, mask-locked composites, channel QC.
@@ -966,15 +1053,26 @@ Ingestion → **Master Catalogue** → Taxonomy & Mapping + Flags/Rules → AI C
 - Amazon API publishing.
 - Meesho bundled template library (compiler, registry, golden tests), export wizard, error import.
 - Flipkart template export.
-- Shipping slab calculator; presentation variants; manual test recording.
+- Shipping slab calculator; presentation variants; manual test recording (ranked on the seller's own tests).
 - Focus categories: apparel (T-shirts, shirts), footwear (sneakers), home (bedsheets).
+
+### Auth phase _(v1.1, before or alongside v1.0)_
+
+- Login and user accounts; workspaces; RBAC.
+- Maker-checker approvals (FR-VR-05); audit attributed per user.
+- Replaces the interim gateway-level protection. SSO later.
 
 ### Phase 2 — v1.0 (8–10 weeks)
 
 - Amazon listing import; Flipkart API mode; sync propagation.
-- Brand voice; returns advisor; price calculator; approvals; agency mode.
-- Infographics, size charts, packaging advisor; cross-seller shipping learning.
+- Brand voice; returns advisor; price calculator.
+- Infographics, size charts, packaging advisor.
 - Error dictionaries; staleness detection; seller-override templates.
+
+### After the Auth phase _(v1.1)_
+
+- Agency mode (FR-AD-02).
+- Cross-seller learning: shipping-test ranking (FR-SHP-05), cross-seller error-spike detection (FR-TL-09).
 
 ### Phase 3 — v2
 
@@ -990,7 +1088,7 @@ Ingestion → **Master Catalogue** → Taxonomy & Mapping + Flags/Rules → AI C
 1. Primary customer: own brands or SaaS for third-party sellers?
 2. Launch categories beyond the four templates provided?
 3. Auto-publish tolerance for high-confidence AI content?
-4. Cross-seller shipping-data sharing (opt-in) — yes/no?
+4. Cross-seller shipping-data sharing (opt-in) — yes/no? _(v1.1: not needed for MVP; decide before the post-Auth cross-seller work.)_
 5. Image generation stack: in-house vs API provider?
 
 ### Meesho (requires real accounts)
@@ -1132,3 +1230,5 @@ _Note: third-party sources are marked where claims are unverified. Re-verify all
 | Master Catalogue | ListingPilot's canonical product knowledge base                   |
 | Product Flag     | Human-confirmed real-world toggle driving channel requirements |
 | Golden file      | Expected output file used in regression tests                  |
+| Workspace        | Tenant boundary for all data; exactly one in the MVP (v1.1)    |
+| Auth phase       | Phase adding login, users, RBAC and maker-checker (v1.1)       |
