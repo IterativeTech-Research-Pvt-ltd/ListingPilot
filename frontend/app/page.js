@@ -345,6 +345,7 @@ export default function ListingPilotPhase3App() {
   const [batchMarketplace, setBatchMarketplace] = useState("all");
   const [batchOverwrite, setBatchOverwrite] = useState(false);
   const [isBatchRunning, setIsBatchRunning] = useState(false);
+  const batchAbortRef = useRef(null);
 
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
@@ -412,9 +413,9 @@ export default function ListingPilotPhase3App() {
   ]);
   const [newClaimInput, setNewClaimInput] = useState("");
   const [credentials, setCredentials] = useState({
-    amazon: { seller_id: "SELLER_999888", has_client_id: false, client_id_masked: "amz****890", status: "sandbox_stub" },
-    flipkart: { has_app_id: false, app_id_masked: "fk_****877", status: "sandbox_stub" },
-    ai_engine: { provider: "openrouter", has_api_key: true, api_key_masked: "sk-****890", model: "nvidia/nemotron-3.5-lightning:free", status: "active" }
+    amazon: { seller_id: "", has_client_id: false, client_id_masked: "", status: "sandbox_stub" },
+    flipkart: { has_app_id: false, app_id_masked: "", status: "sandbox_stub" },
+    ai_engine: { provider: "openrouter", has_api_key: false, api_key_masked: "", model: "", status: "unknown" }
   });
   const [credForm, setCredForm] = useState({
     amazon_seller_id: "",
@@ -1141,8 +1142,16 @@ export default function ListingPilotPhase3App() {
 
   // ── Batch Generation Workflow ─────────────────────────────────────────────
 
+  const closeBatchModal = () => {
+    // Abort an in-flight batch so the backend stops generating
+    if (batchAbortRef.current) batchAbortRef.current.abort();
+    setShowBatchModal(false);
+  };
+
   const handleRunBatch = async () => {
     setIsBatchRunning(true);
+    const controller = new AbortController();
+    batchAbortRef.current = controller;
     const mpLabel = batchMarketplace === "all" 
       ? "ALL Marketplaces (Amazon + Flipkart + Meesho)" 
       : batchMarketplace.toUpperCase();
@@ -1161,7 +1170,8 @@ export default function ListingPilotPhase3App() {
       if (batchCategory && batchCategory !== "All") params.append("category", batchCategory);
 
       const res = await fetch(`${API_BASE}/drafts/generate-batch?${params.toString()}`, {
-        method: "POST"
+        method: "POST",
+        signal: controller.signal
       });
 
       if (res.ok) {
@@ -1174,7 +1184,12 @@ export default function ListingPilotPhase3App() {
       } else {
         throw new Error("Batch API failed");
       }
-    } catch {
+    } catch (err) {
+      if (err?.name === "AbortError") {
+        showToast("Batch Generation Cancelled", "Stopped. Drafts generated before cancelling were kept.", "info");
+        fetchAllData();
+        return;
+      }
       // Local batch simulation fallback
       const targetProducts = batchCategory === "All" 
         ? products 
@@ -1238,6 +1253,7 @@ export default function ListingPilotPhase3App() {
         "success"
       );
     } finally {
+      batchAbortRef.current = null;
       setIsBatchRunning(false);
       setShowBatchModal(false);
     }
@@ -3280,7 +3296,7 @@ export default function ListingPilotPhase3App() {
                   <div className="metric-row">
                     <span className="label">Seller ID</span>
                     <span className="value" style={{ fontFamily: "var(--f-mono)" }}>
-                      {credentials.amazon?.seller_id || "SELLER_999888"}
+                      {credentials.amazon?.seller_id || "Not configured"}
                     </span>
                   </div>
                   <div className="metric-row">
@@ -3599,11 +3615,11 @@ export default function ListingPilotPhase3App() {
 
       {/* ── Batch Generation Modal ────────────────────────────────────────── */}
       {showBatchModal && (
-        <div className="modal-overlay" onClick={() => setShowBatchModal(false)}>
+        <div className="modal-overlay" onClick={closeBatchModal}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h3>⚡ Batch AI Listing Generation</h3>
-              <button onClick={() => setShowBatchModal(false)} style={{ background: "none", border: "none", fontSize: "1.2rem", cursor: "pointer" }}>✕</button>
+              <button onClick={closeBatchModal} style={{ background: "none", border: "none", fontSize: "1.2rem", cursor: "pointer" }}>✕</button>
             </div>
             <div className="modal-body">
               <p style={{ fontSize: "0.86rem", color: "var(--muted)", marginBottom: "16px" }}>
@@ -3651,8 +3667,8 @@ export default function ListingPilotPhase3App() {
               </div>
             </div>
             <div className="modal-footer">
-              <button className="btn" onClick={() => setShowBatchModal(false)}>Cancel</button>
-              <button 
+              <button className="btn" onClick={closeBatchModal}>{isBatchRunning ? "Stop Generation" : "Cancel"}</button>
+              <button
                 className="btn btn-primary"
                 onClick={handleRunBatch}
                 disabled={isBatchRunning}

@@ -75,3 +75,6 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# --- Runtime admin settings & credentials (created on first run by SettingsService) ---
+backend/app/data/dynamic_settings.json

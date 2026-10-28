@@ -85,16 +85,16 @@ def test_dynamic_banned_claims_and_rule_engine_integration():
 def test_update_credentials_masked():
     """Verify credentials updating and masking (ADM-3)."""
     update_payload = {
-        "amazon_seller_id": "SELLER_999888",
-        "amazon_sp_api_client_id": "amzn1.application-oa2-client.1234567890",
-        "flipkart_app_id": "fk_app_live_8877",
-        "openrouter_api_key": "sk-or-v1-abcdef1234567890"
+        "amazon_seller_id": "TEST_SELLER_ID",
+        "amazon_sp_api_client_id": "test-client-id-1234567890",
+        "flipkart_app_id": "test-flipkart-app-id",
+        "openrouter_api_key": "sk-or-v1-abcdef-test-only"
     }
     put_res = client.put("/api/v1/settings/credentials", json=update_payload)
     assert put_res.status_code == 200
     creds = put_res.json()
     
-    assert creds["amazon"]["seller_id"] == "SELLER_999888"
+    assert creds["amazon"]["seller_id"] == "TEST_SELLER_ID"
     assert creds["amazon"]["has_client_id"] is True
     assert "1234567890" not in creds["amazon"]["client_id_masked"]  # masked
     assert creds["flipkart"]["has_app_id"] is True

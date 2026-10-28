@@ -4,13 +4,19 @@ Allows client to update brand voice, compliance rules, banned claims, and market
 without modifying code or requiring vendor intervention.
 """
 import os
+import copy
 import json
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 from app.core.config import settings
 
-SETTINGS_FILE = Path(__file__).resolve().parents[1] / "data" / "dynamic_settings.json"
+# Runtime store for admin-edited settings and credentials. It is gitignored and created on
+# first use; LISTINGPILOT_SETTINGS_FILE lets tests point it somewhere disposable.
+SETTINGS_FILE = Path(
+    os.environ.get("LISTINGPILOT_SETTINGS_FILE")
+    or Path(__file__).resolve().parents[1] / "data" / "dynamic_settings.json"
+)
 
 DEFAULT_SETTINGS = {
     "brand_voice": {
@@ -70,12 +76,8 @@ class SettingsService:
             SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
         if not SETTINGS_FILE.exists():
-            # Populate with environment values if present
-            data = dict(DEFAULT_SETTINGS)
-            if hasattr(settings, "OPENROUTER_API_KEY") and settings.OPENROUTER_API_KEY:
-                data["credentials"]["openrouter_api_key"] = settings.OPENROUTER_API_KEY
-            if hasattr(settings, "AMAZON_SELLER_ID") and settings.AMAZON_SELLER_ID:
-                data["credentials"]["amazon_seller_id"] = settings.AMAZON_SELLER_ID
+            # Secrets from .env are not copied into the file; adapters read them from env directly
+            data = copy.deepcopy(DEFAULT_SETTINGS)
             with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             return data
@@ -84,7 +86,7 @@ class SettingsService:
             with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
-            return DEFAULT_SETTINGS
+            return copy.deepcopy(DEFAULT_SETTINGS)
 
     @classmethod
     def _save(cls, data: Dict[str, Any]):

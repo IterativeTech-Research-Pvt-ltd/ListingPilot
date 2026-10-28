@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Optional, Dict, Any
@@ -99,6 +99,7 @@ async def generate_draft(
 
 @router.post("/generate-batch", summary="Generate AI drafts for all (or filtered) products in batch")
 async def generate_batch(
+    request: Request,
     marketplace: str = Query("amazon", pattern="^(amazon|flipkart|meesho|all)$"),
     category: Optional[str] = Query(None, description="Filter by category"),
     overwrite: bool = Query(False, description="Re-generate existing drafts"),
@@ -120,10 +121,19 @@ async def generate_batch(
     generated = 0
     skipped = 0
     errors_list = []
+    cancelled = False
     target_marketplaces = ["amazon", "flipkart", "meesho"] if marketplace == "all" else [marketplace]
 
     for product in products:
+        if cancelled:
+            break
         for mp in target_marketplaces:
+            # Stop generating once the client cancels (aborted fetch / closed tab)
+            if await request.is_disconnected():
+                print(f"Batch generation cancelled by client after {generated} drafts")
+                cancelled = True
+                break
+
             # Check if draft already exists
             existing = db.query(ListingDraft).filter(
                 ListingDraft.product_id == product.id,
@@ -144,6 +154,8 @@ async def generate_batch(
                     existing.bullets = content["bullets"]
                     existing.description = content["description"]
                     existing.keywords = content["keywords"]
+                    existing.technical_specs = content.get("technical_specs", {})
+                    existing.aplus_content = content.get("aplus_content", {})
                     existing.status = status
                     existing.is_approved = False
                     existing.rule_results = rule_results
@@ -155,6 +167,8 @@ async def generate_batch(
                         bullets=content["bullets"],
                         description=content["description"],
                         keywords=content["keywords"],
+                        technical_specs=content.get("technical_specs", {}),
+                        aplus_content=content.get("aplus_content", {}),
                         status=status,
                         is_approved=False,
                         rule_results=rule_results
@@ -169,6 +183,7 @@ async def generate_batch(
 
     return {
         "success": True,
+        "cancelled": cancelled,
         "marketplace": marketplace,
         "marketplaces": target_marketplaces,
         "total_products": len(products),

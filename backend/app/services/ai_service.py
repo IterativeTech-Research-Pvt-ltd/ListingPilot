@@ -1,7 +1,14 @@
 import json
+import time
 import httpx
 import re
 from typing import Dict, Any, Optional
+
+# Models that returned 429 are skipped until this monotonic timestamp, so a batch
+# doesn't spend a round trip per product on a model that is rate-limited upstream.
+_MODEL_COOLDOWN_UNTIL: Dict[str, float] = {}
+DEFAULT_RATE_LIMIT_COOLDOWN_S = 60.0
+MAX_RATE_LIMIT_COOLDOWN_S = 600.0
 from app.core.config import settings
 from app.models.product import Product
 from app.services.settings_service import SettingsService
@@ -97,13 +104,6 @@ Category Schema Guidelines (Amazon SP-API PTD):
         else:
             openrouter_key = getattr(settings, "OPENROUTER_API_KEY", "")
 
-        # Diagnostic logging (non-sensitive key inspection)
-        print("AI_PROVIDER:", settings.AI_PROVIDER)
-        print("DB key configured:", bool(raw_creds.get("openrouter_api_key")))
-        print("ENV key configured:", bool(settings.OPENROUTER_API_KEY))
-        print("Selected key configured:", bool(openrouter_key))
-        print("Selected key length:", len(openrouter_key or ""))
-
         if settings.AI_PROVIDER == "openrouter" or (openrouter_key and not settings.ANTHROPIC_API_KEY):
             return await cls._call_openrouter(system_prompt, user_prompt, product, marketplace=marketplace, custom_key=openrouter_key)
         elif settings.ANTHROPIC_API_KEY:
@@ -133,11 +133,19 @@ Category Schema Guidelines (Amazon SP-API PTD):
 
         candidate_models = [
             configured_model,
+            # Regular (non-:free) Google models are routed through our own Google AI Studio
+            # key via OpenRouter BYOK, so they use our quota instead of the shared free pool
+            "google/gemma-4-26b-a4b-it",
+            "google/gemini-3.5-flash-lite",
             "google/gemma-4-26b-a4b-it:free",
             "nvidia/nemotron-3.5-lightning:free",
             "minimax/minimax-m3.1-flash",
+            "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "google/gemma-4-31b-it:free",
             "liquid/lfm-2.5-2.6b:free",
-            "recursive/flint-v1.0:free"
+            "recursive/flint-v1.0:free",
+            # OpenRouter's auto-router: picks whichever free model is currently available
+            "openrouter/free"
         ]
         # Remove duplicates while preserving order
         models_to_try = []
@@ -145,49 +153,60 @@ Category Schema Guidelines (Amazon SP-API PTD):
             if m and m not in models_to_try:
                 models_to_try.append(m)
 
-        for model_name in models_to_try:
-            payload = {
-                "model": model_name,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "temperature": 0.3,
-                "max_tokens": 3000
-            }
+        now = time.monotonic()
+        available_models = [m for m in models_to_try if _MODEL_COOLDOWN_UNTIL.get(m, 0) <= now]
 
-            try:
-                async with httpx.AsyncClient(timeout=22.0) as client:
+        async with httpx.AsyncClient(timeout=22.0) as client:
+            for model_name in available_models:
+                payload = {
+                    "model": model_name,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 3000
+                }
+
+                try:
                     res = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=headers, json=payload)
+                    if res.status_code == 429:
+                        cooldown = cls._rate_limit_cooldown(res)
+                        _MODEL_COOLDOWN_UNTIL[model_name] = time.monotonic() + cooldown
+                        print(f"OpenRouter: {model_name} rate-limited (429); skipping it for {int(cooldown)}s", flush=True)
+                        continue
                     res.raise_for_status()
                     data = res.json()
                     choices = data.get("choices", [])
-                    if choices and "message" in choices[0]:
-                        msg = choices[0]["message"]
-                        content = msg.get("content")
-                        # Handle reasoning models where output or JSON was generated in reasoning
-                        if not content and msg.get("reasoning"):
-                            reasoning_text = msg["reasoning"]
-                            json_match = re.search(r"(\{\s*\"title\".*\})", reasoning_text, flags=re.DOTALL)
-                            if json_match:
-                                content = json_match.group(1)
-                        if not content or not isinstance(content, str) or not content.strip():
-                            continue
-                        parsed = cls._parse_json_response(content, product, marketplace=marketplace)
-                        if parsed and parsed.get("title"):
-                            return parsed
-            except httpx.HTTPStatusError as e:
-                print(f"OpenRouter status ({model_name}):", e.response.status_code)
-                print(f"OpenRouter response ({model_name}):", e.response.text[:500])
-                continue
-            except httpx.RequestError as e:
-                print(f"OpenRouter network error ({model_name}):", e)
-                continue
-            except Exception as e:
-                print(f"OpenRouter processing error ({model_name}):", e)
-                continue
+                    if not choices or "message" not in choices[0]:
+                        print(f"OpenRouter: {model_name} returned no choices; trying next model", flush=True)
+                        continue
+                    msg = choices[0]["message"]
+                    content = msg.get("content")
+                    # Handle reasoning models where output or JSON was generated in reasoning
+                    if not content and msg.get("reasoning"):
+                        reasoning_text = msg["reasoning"]
+                        json_match = re.search(r"(\{\s*\"title\".*\})", reasoning_text, flags=re.DOTALL)
+                        if json_match:
+                            content = json_match.group(1)
+                    if not content or not isinstance(content, str) or not content.strip():
+                        print(f"OpenRouter: {model_name} returned empty content; trying next model", flush=True)
+                        continue
+                    parsed = cls._parse_json_response(content, product, marketplace=marketplace, fallback_on_error=False)
+                    if parsed and parsed.get("title"):
+                        return parsed
+                    print(f"OpenRouter: {model_name} returned unparseable JSON; trying next model", flush=True)
+                except httpx.HTTPStatusError as e:
+                    print(f"OpenRouter: {model_name} HTTP {e.response.status_code}: {e.response.text[:200]}", flush=True)
+                except httpx.RequestError as e:
+                    print(f"OpenRouter: {model_name} network error: {e}", flush=True)
+                except Exception as e:
+                    print(f"OpenRouter: {model_name} processing error: {e}", flush=True)
 
-        print("OpenRouter models exhausted or rate-limited; generating compliant listing via built-in rule engine")
+        if not available_models:
+            print("OpenRouter: all models are cooling down after rate limits; using built-in generator", flush=True)
+        else:
+            print("OpenRouter models exhausted or rate-limited; generating compliant listing via built-in rule engine", flush=True)
         return cls._fallback_generator(product, product.brand or settings.DEFAULT_BRAND, marketplace=marketplace)
 
     @classmethod
@@ -348,8 +367,21 @@ Category Schema Guidelines (Amazon SP-API PTD):
         return draft
 
     @classmethod
-    def _parse_json_response(cls, raw: Any, product: Product, marketplace: str = "amazon") -> Dict[str, Any]:
+    def _rate_limit_cooldown(cls, res: httpx.Response) -> float:
+        """Seconds to skip a model after a 429, from Retry-After when OpenRouter sends it."""
+        retry_after = res.headers.get("retry-after")
+        try:
+            seconds = float(retry_after) if retry_after else DEFAULT_RATE_LIMIT_COOLDOWN_S
+        except ValueError:
+            seconds = DEFAULT_RATE_LIMIT_COOLDOWN_S
+        return min(max(seconds, 1.0), MAX_RATE_LIMIT_COOLDOWN_S)
+
+    @classmethod
+    def _parse_json_response(cls, raw: Any, product: Product, marketplace: str = "amazon", fallback_on_error: bool = True) -> Optional[Dict[str, Any]]:
+        """Parses model JSON. With fallback_on_error=False, returns None on bad output so the caller can try another model."""
         if not raw or not isinstance(raw, str) or not raw.strip():
+            if not fallback_on_error:
+                return None
             return cls._fallback_generator(product, product.brand or settings.DEFAULT_BRAND, marketplace=marketplace)
 
         clean = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
@@ -364,6 +396,8 @@ Category Schema Guidelines (Amazon SP-API PTD):
                 parsed["title"] = parsed["title"][:197] + "..."
             return cls._enrich_with_apple_grade_specs_and_aplus(product, product.brand or settings.DEFAULT_BRAND, parsed)
         except Exception:
+            if not fallback_on_error:
+                return None
             return cls._fallback_generator(product, product.brand or settings.DEFAULT_BRAND, marketplace=marketplace)
 
     @classmethod

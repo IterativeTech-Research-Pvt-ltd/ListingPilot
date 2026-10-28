@@ -137,6 +137,8 @@ def generate_batch_drafts_task(
                         existing.bullets = content["bullets"]
                         existing.description = content["description"]
                         existing.keywords = content["keywords"]
+                        existing.technical_specs = content.get("technical_specs", {})
+                        existing.aplus_content = content.get("aplus_content", {})
                         existing.status = status
                         existing.is_approved = False
                         existing.rule_results = rule_results
@@ -148,6 +150,8 @@ def generate_batch_drafts_task(
                             bullets=content["bullets"],
                             description=content["description"],
                             keywords=content["keywords"],
+                            technical_specs=content.get("technical_specs", {}),
+                            aplus_content=content.get("aplus_content", {}),
                             status=status,
                             is_approved=False,
                             rule_results=rule_results

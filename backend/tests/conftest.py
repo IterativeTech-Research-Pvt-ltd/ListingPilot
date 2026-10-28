@@ -1,3 +1,11 @@
+import os
+import tempfile
+
+# Keep tests away from the real settings/credentials store; must be set before app imports
+os.environ["LISTINGPILOT_SETTINGS_FILE"] = os.path.join(
+    tempfile.mkdtemp(prefix="listingpilot-tests-"), "dynamic_settings.json"
+)
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker

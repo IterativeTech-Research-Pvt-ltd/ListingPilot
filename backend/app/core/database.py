@@ -14,14 +14,17 @@ def init_engine():
         raw_url = raw_url.replace("postgres://", "postgresql+psycopg2://", 1)
 
     parsed = urlparse(raw_url)
-    neon_host = parsed.hostname or "ep-shy-rain-b4yrdu7z-pooler.c-6.us-east-2.aws.neon.tech"
+    neon_host = parsed.hostname
+    neon_port = parsed.port or 5432
 
     # Pre-flight reachability check
     is_reachable = False
     try:
-        with socket.create_connection((neon_host, 5432), timeout=2.5):
+        if not neon_host:
+            raise ValueError("DATABASE_URL is not set")
+        with socket.create_connection((neon_host, neon_port), timeout=2.5):
             is_reachable = True
-        print(f"[ListingPilot] Connected directly to Neon Cloud DB ({neon_host}:5432).")
+        print(f"[ListingPilot] Connected directly to Neon Cloud DB ({neon_host}:{neon_port}).")
     except Exception:
         print("\n" + "=" * 78)
         print("[ListingPilot Network Notice] Could not reach Neon PostgreSQL on port 5432.")
