@@ -13,7 +13,7 @@ from app.services.ai_service import AIService
 from app.services.rule_engine import RuleEngine
 from app.services.amazon_adapter import AmazonAdapter
 from app.services.flipkart_adapter import FlipkartAdapter
-from app.services.meesho_adapter import MeeshoAdapter
+from app.services.meesho_adapter import MeeshoAdapter, MeeshoExportIncomplete
 from app.services.settings_service import SettingsService
 from app.tasks.batch_tasks import (
     generate_batch_drafts_task,
@@ -43,6 +43,7 @@ class RejectRequest(BaseModel):
 async def generate_draft(
     product_id: int,
     marketplace: str = Query("amazon", pattern="^(amazon|flipkart|meesho)$"),
+    preview: bool = Query(False, description="Return new content without saving it when a draft already exists"),
     db: Session = Depends(get_db)
 ):
     product = db.query(Product).filter(Product.id == product_id).first()
@@ -51,10 +52,10 @@ async def generate_draft(
 
     # Call AI generation service
     content = await AIService.generate_listing(product, marketplace=marketplace)
-    
+
     # Run rule evaluation
     rule_results = RuleEngine.evaluate(product, draft=content, marketplace=marketplace)
-    
+
     # Determine status: starts in draft state (issues are captured in rule_results)
     status = "draft"
 
@@ -63,6 +64,23 @@ async def generate_draft(
         ListingDraft.product_id == product_id,
         ListingDraft.marketplace == marketplace
     ).first()
+
+    if preview and draft:
+        # Keep the saved draft untouched; the editor shows this until the user saves or approves it
+        return {
+            **draft.to_dict(),
+            "title": content["title"],
+            "bullets": content["bullets"],
+            "description": content["description"],
+            "keywords": content["keywords"],
+            "technical_specs": content.get("technical_specs", {}),
+            "aplus_content": content.get("aplus_content", {}),
+            "status": status,
+            "is_approved": False,
+            "rule_results": rule_results,
+            "generation_source": AIService.generation_source(content),
+            "preview": True,
+        }
 
     if draft:
         draft.title = content["title"]
@@ -92,7 +110,8 @@ async def generate_draft(
 
     db.commit()
     db.refresh(draft)
-    return draft.to_dict()
+    # Not persisted (no column yet): tells the UI whether AI or the template generator wrote this
+    return {**draft.to_dict(), "generation_source": AIService.generation_source(content)}
 
 
 # ── Batch Draft Generation ───────────────────────────────────────────────────
@@ -121,6 +140,7 @@ async def generate_batch(
     generated = 0
     skipped = 0
     errors_list = []
+    template_items = []
     cancelled = False
     target_marketplaces = ["amazon", "flipkart", "meesho"] if marketplace == "all" else [marketplace]
 
@@ -176,11 +196,14 @@ async def generate_batch(
                     db.add(draft)
 
                 generated += 1
+                if AIService.generation_source(content) == "template":
+                    template_items.append({"product_id": product.id, "sku": product.sku, "marketplace": mp})
             except Exception as e:
                 errors_list.append({"product_id": product.id, "sku": product.sku, "marketplace": mp, "error": str(e)})
 
     db.commit()
 
+    ai_generated = generated - len(template_items)
     return {
         "success": True,
         "cancelled": cancelled,
@@ -188,9 +211,15 @@ async def generate_batch(
         "marketplaces": target_marketplaces,
         "total_products": len(products),
         "generated": generated,
+        "ai_generated": ai_generated,
+        "template_generated": len(template_items),
+        "template_items": template_items,
         "skipped": skipped,
         "errors": errors_list,
-        "message": f"Batch generation complete: {generated} drafts generated across {len(target_marketplaces)} channel(s), {skipped} skipped, {len(errors_list)} errors."
+        "message": (
+            f"Batch generation complete: {generated} drafts generated across {len(target_marketplaces)} channel(s) "
+            f"({ai_generated} by AI, {len(template_items)} template copy), {skipped} skipped, {len(errors_list)} errors."
+        )
     }
 
 
@@ -613,7 +642,14 @@ def export_meesho_catalog(
             "draft": draft.to_dict() if draft else None
         })
 
-    buf, media_type, filename = MeeshoAdapter.generate_batch_export(items, category_filter=category, force_zip=as_zip)
+    try:
+        buf, media_type, filename = MeeshoAdapter.generate_batch_export(items, category_filter=category, force_zip=as_zip)
+    except MeeshoExportIncomplete as e:
+        # No file at all rather than one Meesho rejects or that carries values we made up
+        raise HTTPException(status_code=422, detail={
+            "message": f"Meesho export blocked: {len(e.problems)} problem(s) must be fixed in the product data first.",
+            "problems": e.problems,
+        })
     SettingsService.record_sync("meesho")
     return StreamingResponse(
         buf,

@@ -80,3 +80,44 @@ def test_banned_claim_detection(mock_gen):
     # Approval should be rejected when errors are present
     appr_fail = client.post(f"/api/v1/drafts/{draft_id}/approve")
     assert appr_fail.status_code == 400
+
+
+def test_regenerate_preview_does_not_touch_saved_draft_until_saved():
+    """Regenerate with preview=true fills the editor only; Save (PUT) is what replaces the DB copy."""
+    product_id = client.get("/api/v1/catalogue/products?category=Bedsheets").json()["items"][0]["id"]
+    old_copy = {**MOCK_LISTING, "title": "Gulmohar Home Old Saved Title For Bedsheet Double Cotton 180 TC"}
+    new_copy = {**MOCK_LISTING, "title": "Gulmohar Home Brand New AI Title For Bedsheet Double Cotton 180 TC"}
+
+    # A saved draft exists with the old copy
+    with patch("app.services.ai_service.AIService.generate_listing", new_callable=AsyncMock, return_value=old_copy):
+        saved = client.post(f"/api/v1/drafts/generate/{product_id}?marketplace=flipkart").json()
+    assert saved.get("preview") is not True
+
+    # Regenerate as a preview: response carries the new copy, DB keeps the old one
+    with patch("app.services.ai_service.AIService.generate_listing", new_callable=AsyncMock, return_value=new_copy):
+        preview = client.post(f"/api/v1/drafts/generate/{product_id}?marketplace=flipkart&preview=true").json()
+    assert preview["preview"] is True
+    assert preview["id"] == saved["id"]
+    assert preview["title"] == new_copy["title"]
+    in_db = client.get(f"/api/v1/drafts/product/{product_id}?marketplace=flipkart").json()
+    assert in_db["title"] == old_copy["title"]
+
+    # Saving the editor content replaces the DB copy
+    put = client.put(f"/api/v1/drafts/{saved['id']}", json={"title": preview["title"], "bullets": preview["bullets"]})
+    assert put.status_code == 200
+    in_db = client.get(f"/api/v1/drafts/product/{product_id}?marketplace=flipkart").json()
+    assert in_db["title"] == new_copy["title"]
+
+
+def test_preview_without_existing_draft_creates_it():
+    import uuid
+    product = client.post("/api/v1/catalogue/products", json={
+        "sku": f"PREVIEW-{uuid.uuid4().hex[:8]}", "name": "Preview test bedsheet", "category": "Bedsheets",
+        "price": 999, "stock": 5, "attributes": {"Material": "Cotton"},
+    }).json()
+
+    with patch("app.services.ai_service.AIService.generate_listing", new_callable=AsyncMock, return_value=MOCK_LISTING):
+        res = client.post(f"/api/v1/drafts/generate/{product['id']}?marketplace=meesho&preview=true").json()
+
+    assert res.get("preview") is not True
+    assert client.get(f"/api/v1/drafts/product/{product['id']}?marketplace=meesho").json()["id"] == res["id"]

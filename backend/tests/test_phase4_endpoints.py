@@ -82,8 +82,11 @@ def test_dynamic_banned_claims_and_rule_engine_integration():
     assert any(i["kind"] == "banned_claim" for i in eval_result["issues"])
 
 
-def test_update_credentials_masked():
+def test_update_credentials_masked(monkeypatch):
     """Verify credentials updating and masking (ADM-3)."""
+    # The AI engine status follows AI_PROVIDER; pin it so a saved OpenRouter key is what's reported
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "AI_PROVIDER", "openrouter")
     update_payload = {
         "amazon_seller_id": "TEST_SELLER_ID",
         "amazon_sp_api_client_id": "test-client-id-1234567890",

@@ -1,49 +1,55 @@
-import socket
+import time
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
-from urllib.parse import urlparse
 from .config import settings
+
+# Neon suspends idle compute; the first connection afterwards waits while it wakes up
+NEON_CONNECT_TIMEOUT_S = 15
+NEON_CONNECT_ATTEMPTS = 3
 
 
 def init_engine():
-    """Initializes direct connection to the Neon Cloud PostgreSQL database."""
-    raw_url = settings.DATABASE_URL or ""
+    """Engine for the Neon PostgreSQL database in DATABASE_URL. There is no other database."""
+    raw_url = (settings.DATABASE_URL or "").strip()
     if raw_url.startswith("postgresql://"):
         raw_url = raw_url.replace("postgresql://", "postgresql+psycopg2://", 1)
     elif raw_url.startswith("postgres://"):
         raw_url = raw_url.replace("postgres://", "postgresql+psycopg2://", 1)
 
-    parsed = urlparse(raw_url)
-    neon_host = parsed.hostname
-    neon_port = parsed.port or 5432
-
-    # Pre-flight reachability check
-    is_reachable = False
-    try:
-        if not neon_host:
-            raise ValueError("DATABASE_URL is not set")
-        with socket.create_connection((neon_host, neon_port), timeout=2.5):
-            is_reachable = True
-        print(f"[ListingPilot] Connected directly to Neon Cloud DB ({neon_host}:{neon_port}).")
-    except Exception:
-        print("\n" + "=" * 78)
-        print("[ListingPilot Network Notice] Could not reach Neon PostgreSQL on port 5432.")
-        print("Please confirm you are NOT connected to the co-working space Wi-Fi (port 5432 is blocked there).")
-        print("Falling back to local SQLite database (test_pilot.db) so development continues uninterrupted.")
-        print("=" * 78 + "\n")
-
-    if not is_reachable:
-        return create_engine(
-            "sqlite:///./test_pilot.db",
-            connect_args={"check_same_thread": False}
+    if not raw_url.startswith("postgresql+psycopg2://"):
+        raise RuntimeError(
+            "DATABASE_URL must be the Neon PostgreSQL connection string (postgresql://...). "
+            "ListingPilot has no local database fallback."
         )
 
+    # create_engine doesn't connect; the first query (or check_connection at startup) does
     return create_engine(
         raw_url,
-        connect_args={"connect_timeout": 3},
+        connect_args={"connect_timeout": NEON_CONNECT_TIMEOUT_S},
         pool_pre_ping=True,
         pool_recycle=300
     )
+
+
+def check_connection(target=None):
+    """
+    Connects once (retrying while an idle Neon compute wakes up). Raises with a clear message
+    when Neon can't be reached, instead of continuing without a database.
+    """
+    target = target or engine
+    for attempt in range(1, NEON_CONNECT_ATTEMPTS + 1):
+        try:
+            with target.connect():
+                return
+        except Exception as e:
+            if attempt == NEON_CONNECT_ATTEMPTS:
+                raise RuntimeError(
+                    f"Cannot reach the Neon database at {target.url.host}:{target.url.port or 5432} "
+                    f"after {attempt} attempts ({type(e).__name__}). Port 5432 is blocked on the "
+                    "co-working space Wi-Fi; switch networks and restart."
+                ) from e
+            print(f"[ListingPilot] Neon not answering (attempt {attempt}); it may be waking from idle, retrying...", flush=True)
+            time.sleep(2)
 
 
 engine = init_engine()

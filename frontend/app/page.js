@@ -628,34 +628,46 @@ export default function ListingPilotPhase3App() {
 
   // ── Multi-Marketplace Draft Review & Publish Actions ──────────────────────
 
+  const buildDraftEditPayload = () => ({
+    title: editTitle.trim(),
+    bullets: editBullets.map(b => b.trim()).filter(Boolean),
+    description: editDescription.trim(),
+    keywords: editKeywords.split(",").map(k => k.trim()).filter(Boolean),
+    technical_specs: editTechnicalSpecs,
+    aplus_content: editAplusContent
+  });
+
+  // Writes the editor's current content (including an unsaved AI preview) to the DB; rules re-run server-side.
+  // Throws on failure so callers never act on content that wasn't saved.
+  const persistDraftEdits = async () => {
+    const res = await fetch(`${API_BASE}/drafts/${selectedDraft.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildDraftEditPayload())
+    });
+    if (!res.ok) throw new Error(`Save failed (HTTP ${res.status})`);
+    const updated = await res.json();
+    setDrafts(prev => prev.map(d => d.id === updated.id ? updated : d));
+    setSelectedDraft(updated);
+    return updated;
+  };
+
+  const handleDiscardPreview = () => {
+    // Drop the unsaved AI copy and show the saved draft again
+    const saved = drafts.find(d => d.id === selectedDraft?.id);
+    if (saved) setSelectedDraft(saved);
+    showToast("AI Copy Discarded", "Editor restored to the saved draft.", "info");
+  };
+
   const handleSaveDraftEdits = async () => {
     if (!selectedDraft) return;
     setIsSavingEdit(true);
 
-    const payload = {
-      title: editTitle.trim(),
-      bullets: editBullets.map(b => b.trim()).filter(Boolean),
-      description: editDescription.trim(),
-      keywords: editKeywords.split(",").map(k => k.trim()).filter(Boolean),
-      technical_specs: editTechnicalSpecs,
-      aplus_content: editAplusContent
-    };
+    const payload = buildDraftEditPayload();
 
     try {
-      const res = await fetch(`${API_BASE}/drafts/${selectedDraft.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-
-      if (res.ok) {
-        const updated = await res.json();
-        setDrafts(prev => prev.map(d => d.id === updated.id ? updated : d));
-        setSelectedDraft(updated);
-        showToast("Draft Saved & Re-evaluated", `Rules verified for ${selectedDraft.marketplace.toUpperCase()}.`, "success");
-      } else {
-        throw new Error("Backend edit failed");
-      }
+      await persistDraftEdits();
+      showToast("Draft Saved & Re-evaluated", `Rules verified for ${selectedDraft.marketplace.toUpperCase()}.`, "success");
     } catch {
       // Offline local simulation
       const hasErrors = payload.title.length < 30 || /best|cheapest|guaranteed/i.test(payload.title);
@@ -689,6 +701,22 @@ export default function ListingPilotPhase3App() {
     }
 
     setIsApproving(true);
+
+    // Approve exactly what's in the editor: save it first (this also keeps an unsaved AI preview)
+    let saved;
+    try {
+      saved = await persistDraftEdits();
+    } catch (err) {
+      showToast("Not Approved", `Couldn't save the editor content, so nothing was approved. ${err.message}`, "warn");
+      setIsApproving(false);
+      return;
+    }
+    if (saved.rule_results?.has_errors) {
+      showToast("Rule Errors Pending", "Changes saved, but rule checks fail on them. Fix the issues before approving.", "warn");
+      setIsApproving(false);
+      return;
+    }
+
     try {
       const res = await fetch(`${API_BASE}/drafts/${selectedDraft.id}/approve`, {
         method: "POST"
@@ -892,22 +920,31 @@ export default function ListingPilotPhase3App() {
     setIsRegenerating(true);
 
     try {
-      const res = await fetch(`${API_BASE}/drafts/generate/${targetProd.id}?marketplace=${targetMarketplace}`, {
+      // preview=true: an existing draft stays as saved; the new copy only fills the editor until Save/Approve
+      const res = await fetch(`${API_BASE}/drafts/generate/${targetProd.id}?marketplace=${targetMarketplace}&preview=true`, {
         method: "POST"
       });
 
       if (res.ok) {
         const generated = await res.json();
-        setDrafts(prev => {
-          const exists = prev.some(d => d.id === generated.id);
-          return exists ? prev.map(d => d.id === generated.id ? generated : d) : [generated, ...prev];
-        });
+        if (!generated.preview) {
+          // No earlier draft existed, so the backend created and saved this one
+          setDrafts(prev => {
+            const exists = prev.some(d => d.id === generated.id);
+            return exists ? prev.map(d => d.id === generated.id ? generated : d) : [generated, ...prev];
+          });
+        }
         setSelectedDraft(generated);
         setEditTitle(generated.title || "");
         setEditBullets(Array.isArray(generated.bullets) ? generated.bullets : ["", "", "", "", ""]);
         setEditDescription(generated.description || "");
         setEditKeywords(Array.isArray(generated.keywords) ? generated.keywords.join(", ") : "");
-        showToast("AI Listing Generated! ✨", `Fresh listing tailored for ${targetMarketplace.toUpperCase()} created.`, "success");
+        const keepHint = generated.preview ? " Not saved yet — Save or Approve to keep it." : "";
+        if (generated.generation_source === "template") {
+          showToast("Template Copy Used ⚠️", `AI was unavailable (likely rate-limited), so ${targetMarketplace.toUpperCase()} copy was built from catalogue attributes. Try Regenerate in a minute.${keepHint}`, "warn");
+        } else {
+          showToast("AI Listing Generated! ✨", `New ${targetMarketplace.toUpperCase()} copy loaded in the editor.${keepHint}`, "success");
+        }
       } else {
         throw new Error("Generate failed");
       }
@@ -1057,7 +1094,17 @@ export default function ListingPilotPhase3App() {
       }
 
       const res = await fetch(`${API_BASE}/drafts/meesho/export?${params.toString()}`);
-      if (!res.ok) throw new Error(`Meesho export HTTP error ${res.status}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        const detail = body && body.detail;
+        const problems = (detail && detail.problems) || [];
+        const sample = problems.slice(0, 3).map(p => `${p.sku}: ${p.field} (${p.reason})`).join("; ");
+        const more = problems.length > 3 ? `; +${problems.length - 3} more` : "";
+        throw new Error(
+          (detail && detail.message ? `${detail.message} ${sample}${more}` : null) ||
+          (typeof detail === "string" ? detail : `Meesho export failed (HTTP ${res.status})`)
+        );
+      }
       
       const blob = await res.blob();
       const contentType = res.headers.get("content-type") || "";
@@ -1098,29 +1145,8 @@ export default function ListingPilotPhase3App() {
         );
       }
     } catch (err) {
-      console.warn("Backend meesho export error, generating client fallback:", err);
-      // Fallback CSV for Meesho
-      const headers = ["Product ID / SKU", "Product Name", "Category", "Meesho Selling Price", "MRP", "GST %", "HSN Code", "Inventory", "Description"];
-      const rows = products.filter(p => category === "All" || p.category === category).map(p => [
-        `"${p.sku}"`,
-        `"${p.name.slice(0, 95).replace(/"/g, '""')}"`,
-        `"${p.category}"`,
-        p.price,
-        p.mrp || Math.round(p.price * 1.25),
-        "12%",
-        "6302",
-        p.stock,
-        `"${(p.description || p.name).replace(/"/g, '""')}"`
-      ]);
-      const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
-      const encodedUri = encodeURI(csvContent);
-      const link = document.createElement("a");
-      link.setAttribute("href", encodedUri);
-      link.setAttribute("download", `Meesho_Upload_${category}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      showToast("Meesho Sheet Saved (CSV) 📦", "Generated offline Meesho catalog sheet.", "info");
+      console.warn("Meesho export failed:", err);
+      showToast("Meesho Export Failed", err.message || "Meesho export failed.", "error");
     }
   };
 
@@ -1176,10 +1202,19 @@ export default function ListingPilotPhase3App() {
 
       if (res.ok) {
         const result = await res.json();
-        const successMsg = batchMarketplace === "all"
-          ? `${result.generated} drafts generated across ALL 3 channels (Amazon, Flipkart, Meesho)!`
-          : `${result.generated} drafts generated for ${batchMarketplace.toUpperCase()}.`;
-        showToast("Batch Generation Complete! ✨", successMsg, "success");
+        const channelLabel = batchMarketplace === "all" ? "ALL 3 channels" : batchMarketplace.toUpperCase();
+        const templateCount = result.template_generated || 0;
+        if (templateCount > 0) {
+          // AI was unavailable (e.g. free-tier rate limits) for some items; say so instead of claiming success
+          const skus = (result.template_items || []).slice(0, 5).map(t => t.sku).join(", ");
+          showToast(
+            "Batch Done — Some Template Copy ⚠️",
+            `${result.ai_generated} written by AI, ${templateCount} fell back to template copy for ${channelLabel} (${skus}${templateCount > 5 ? ", …" : ""}). Regenerate those later.`,
+            "warn"
+          );
+        } else {
+          showToast("Batch Generation Complete! ✨", `${result.generated} drafts written by AI for ${channelLabel}.`, "success");
+        }
         fetchAllData();
       } else {
         throw new Error("Batch API failed");
@@ -2151,6 +2186,19 @@ export default function ListingPilotPhase3App() {
                   </button>
                 </div>
               </div>
+
+              {/* Unsaved AI preview: the saved draft is unchanged until Save or Approve */}
+              {selectedDraft?.preview && (
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap", margin: "12px 0", padding: "10px 14px", borderRadius: "8px", border: "1px solid #d97706", background: "rgba(217, 119, 6, 0.08)", fontSize: "0.86rem" }}>
+                  <span>
+                    <b>Unsaved AI copy{selectedDraft.generation_source === "template" ? " (template — AI was unavailable)" : ""}.</b>{" "}
+                    The saved draft is unchanged — <b>Save Changes</b> or <b>Approve</b> to keep this version.
+                  </span>
+                  <button className="btn btn-sm" onClick={handleDiscardPreview}>
+                    ↩ Discard
+                  </button>
+                </div>
+              )}
 
               {/* Split Content Body */}
               <div className="draft-review-body">

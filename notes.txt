@@ -1,1 +1,3 @@
 Meesho delivery fees depends on the product size shape and dimensions shown in the image
+image flow -- how many from the seller? where will they be stored? 
+master catalogue -- one exhaustive form with ALL the detail to be filled instead of excel imports

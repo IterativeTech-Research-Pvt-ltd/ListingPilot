@@ -96,6 +96,7 @@ def generate_batch_drafts_task(
         total_ops = total * len(target_marketplaces)
 
         generated = 0
+        template_generated = 0
         skipped = 0
         errors_list = []
         op_count = 0
@@ -159,6 +160,8 @@ def generate_batch_drafts_task(
                         db.add(draft)
 
                     generated += 1
+                    if AIService.generation_source(content) == "template":
+                        template_generated += 1
                 except Exception as e:
                     errors_list.append({
                         "product_id": product.id,
@@ -176,6 +179,8 @@ def generate_batch_drafts_task(
             "marketplaces": target_marketplaces,
             "total_products": total,
             "generated": generated,
+            "ai_generated": generated - template_generated,
+            "template_generated": template_generated,
             "skipped": skipped,
             "errors": errors_list,
             "message": f"Batch generation complete for tenant '{tenant_id or 'default'}': {generated} generated across {len(target_marketplaces)} channel(s), {skipped} skipped, {len(errors_list)} errors.",

@@ -1,22 +1,44 @@
 import os
 import tempfile
+from urllib.parse import urlparse
 
-# Keep tests away from the real settings/credentials store; must be set before app imports
-os.environ["LISTINGPILOT_SETTINGS_FILE"] = os.path.join(
-    tempfile.mkdtemp(prefix="listingpilot-tests-"), "dynamic_settings.json"
-)
+# Keep tests away from real data; must be set before app imports.
+# The settings store lives in a throwaway directory per run; the database is a separate Neon branch.
+_TEST_DIR = tempfile.mkdtemp(prefix="listingpilot-tests-")
+os.environ["LISTINGPILOT_SETTINGS_FILE"] = os.path.join(_TEST_DIR, "dynamic_settings.json")
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from app.core.config import settings
+from app.core import database
 from app.core.database import Base, get_db
 from app.main import app
 from app.models.product import Product
 from app.models.draft import ListingDraft
 
-TEST_DATABASE_URL = "sqlite:///./test_pilot.db"
-test_engine = create_engine(TEST_DATABASE_URL, connect_args={"check_same_thread": False})
+
+def _test_database_url() -> str:
+    url = (settings.TEST_DATABASE_URL or "").strip()
+    if not url.startswith(("postgresql://", "postgres://")):
+        raise pytest.UsageError(
+            "TEST_DATABASE_URL must point at a separate Neon branch (postgresql://...); see .env.example."
+        )
+    test, main = urlparse(url), urlparse(settings.DATABASE_URL or "")
+    if (test.hostname, test.path) == (main.hostname, main.path):
+        raise pytest.UsageError(
+            "TEST_DATABASE_URL is the app's DATABASE_URL. Tests drop and recreate tables; use a separate Neon branch."
+        )
+    return url.replace("postgres://", "postgresql://", 1).replace("postgresql://", "postgresql+psycopg2://", 1)
+
+
+test_engine = create_engine(
+    _test_database_url(), connect_args={"connect_timeout": database.NEON_CONNECT_TIMEOUT_S}, pool_pre_ping=True
+)
 TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
+# Code that opens sessions directly (Celery tasks) must hit the test branch too, never the app database
+database.SessionLocal.configure(bind=test_engine)
+database.engine = test_engine
 
 def override_get_db():
     db = TestSessionLocal()
@@ -27,11 +49,22 @@ def override_get_db():
 
 app.dependency_overrides[get_db] = override_get_db
 
+# No test may call a real AI provider: without keys generation uses the built-in generator.
+# Tests of a provider set their own fake key and mock httpx (see test_ai_groq.py).
+for _key in ("GROQ_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"):
+    setattr(settings, _key, "")
+
 from app.seeds.seed_pilot_data import PILOT_PRODUCTS
 from app.services.catalogue_service import CatalogueService
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_database():
+    try:
+        database.check_connection(test_engine)
+    except RuntimeError as e:
+        pytest.exit(f"Neon test branch: {e}", returncode=3)
+    # Fresh tables every run so leftovers from earlier runs can't leak into results
+    Base.metadata.drop_all(bind=test_engine)
     Base.metadata.create_all(bind=test_engine)
     db = TestSessionLocal()
     
@@ -67,3 +100,4 @@ def setup_test_database():
     
     db.close()
     yield
+

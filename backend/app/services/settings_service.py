@@ -167,13 +167,26 @@ class SettingsService:
                 "has_app_secret": bool(creds.get("flipkart_app_secret")),
                 "status": "ready" if creds.get("flipkart_app_id") else "sandbox_stub"
             },
-            "ai_engine": {
-                "provider": "openrouter",
-                "has_api_key": bool(creds.get("openrouter_api_key") or getattr(settings, "OPENROUTER_API_KEY", None)),
-                "api_key_masked": mask(creds.get("openrouter_api_key") or getattr(settings, "OPENROUTER_API_KEY", "")),
-                "model": "nvidia/nemotron-3.5-lightning:free",
-                "status": "active"
-            }
+            "ai_engine": cls._ai_engine_status(creds, mask)
+        }
+
+    @classmethod
+    def _ai_engine_status(cls, creds: Dict[str, Any], mask) -> Dict[str, Any]:
+        """Reports the AI provider actually in use (AI_PROVIDER), its model and whether its key is set."""
+        provider = settings.AI_PROVIDER
+        if provider == "groq":
+            key, model = settings.GROQ_API_KEY or "", settings.GROQ_MODEL
+        elif provider == "anthropic":
+            key, model = settings.ANTHROPIC_API_KEY or "", settings.CLAUDE_MODEL
+        else:
+            key = creds.get("openrouter_api_key") or getattr(settings, "OPENROUTER_API_KEY", "") or ""
+            model = settings.OPENROUTER_MODEL
+        return {
+            "provider": provider,
+            "has_api_key": bool(key),
+            "api_key_masked": mask(key),
+            "model": model,
+            "status": "active" if key else "missing_key"
         }
 
     @classmethod

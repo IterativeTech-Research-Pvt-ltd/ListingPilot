@@ -35,7 +35,7 @@ MEESHO_HEADERS = [
     "Product Name *",
     "Size *",
     "Meesho Price (₹) *",
-    "Wrong/Defective Price (₹) *",
+    "Wrong/Defective Price (₹)",
     "MRP (₹) *",
     "GST Rate (%) *",
     "HSN Code *",
@@ -60,6 +60,57 @@ MEESHO_HEADERS = [
     "Brand Name",
     "Product Description *"
 ]
+
+# Dropdown columns where a partial match would change meaning (identifiers, and colours, where
+# "Indigo and white" must not become "White"): only exact or numeric matches are accepted
+EXACT_MATCH_COLUMNS = ("hsn", "gst", "country", "group id", "color", "colour")
+
+# Meesho's catalogue QC flags these words in descriptions (seen in processed upload files)
+MEESHO_FLAGGED_WORDS = ("care", "comfort", "colors")
+
+
+class MeeshoExportIncomplete(Exception):
+    """Raised instead of producing a file Meesho would reject or that would carry made-up values."""
+
+    def __init__(self, problems: List[Dict[str, str]]):
+        self.problems = problems
+        super().__init__(f"{len(problems)} problem(s) block the Meesho export")
+
+
+def _attr(attrs: Dict[str, Any], *names: str) -> Optional[str]:
+    """First non-empty attribute among names, matched case-insensitively."""
+    lowered = {str(k).strip().lower(): v for k, v in (attrs or {}).items()}
+    for name in names:
+        v = lowered.get(name.lower())
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    return None
+
+
+def _inch_dims(text: Optional[str]) -> Optional[Tuple[float, float]]:
+    """(longer, shorter) side from the first 'A x B in' in text, e.g. '90 x 100 in (double)'."""
+    m = re.search(r"(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\s*(?:in\b|inch|\")", text or "", flags=re.IGNORECASE)
+    if not m:
+        return None
+    a, b = float(m.group(1)), float(m.group(2))
+    return max(a, b), min(a, b)
+
+
+def _grams(text: Optional[str]) -> Optional[int]:
+    """Weight in grams from '500', '350 g (set)' or '1.2 kg'; None when no unit-bearing number."""
+    if not text:
+        return None
+    if re.fullmatch(r"\s*\d+(?:\.\d+)?\s*", text):
+        return int(round(float(text)))
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(kg|kgs|g|gm|gms|grams?)\b", text, flags=re.IGNORECASE)
+    if not m:
+        return None
+    qty = float(m.group(1))
+    return int(round(qty * 1000 if m.group(2).lower().startswith("kg") else qty))
+
+
+def _fmt_num(x: float) -> str:
+    return str(int(x)) if float(x).is_integer() else str(x)
 
 
 class MeeshoAdapter:
@@ -303,217 +354,54 @@ class MeeshoAdapter:
         return s.rstrip("s") if len(s) > 3 and s.endswith("s") else s
 
     @classmethod
-    def _match_dropdown_option(
-        cls,
-        val: Any,
-        options: List[str],
-        col_name: str = "",
-        is_compulsory: bool = False
-    ) -> Optional[str]:
+    def _match_dropdown_option(cls, val: Any, options: List[str], col_name: str = "") -> Optional[str]:
         """
-        Intelligently snaps raw product attributes to an exact valid dropdown option
-        from Meesho's Validation Sheet, preventing red validation errors and sheet rejection.
+        Maps a product value to one of the template's dropdown options, written exactly as the
+        template spells it. Only high-confidence matches are returned; anything else is None so
+        the caller can flag it for review instead of guessing:
+          1. exact (case-insensitive) match
+          2. same number ("5.0" -> "5") or number with a unit ("180 TC" -> "180", "5%" -> "5")
+          3. exactly one option named as a whole word/phrase in the value
+             ("100% cotton" -> "Cotton", "90 x 100 in (double)" -> "Double")
+        Step 3 is skipped for Brand and EXACT_MATCH_COLUMNS, which must match exactly.
         """
         if not options:
             return val
+        if val is None or not str(val).strip():
+            return None
 
-        opt_map = {opt.strip().lower(): opt.strip() for opt in options if opt and opt.strip()}
-        if not opt_map:
-            return val
-
-        if val is None or (isinstance(val, str) and not val.strip()):
-            return options[0] if is_compulsory else None
-
+        opt_map = {opt.strip().lower(): opt for opt in options if opt and opt.strip()}
         raw_str = str(val).strip()
         raw_lower = raw_str.lower()
 
-        # 1. Direct match (case-insensitive)
         if raw_lower in opt_map:
             return opt_map[raw_lower]
 
-        # 2. Number string normalization (e.g. 5.0 -> '5', 18.0 -> '18')
-        try:
-            fval = float(raw_str)
-            if fval.is_integer():
-                s_int = str(int(fval))
-                if s_int in opt_map:
-                    return opt_map[s_int]
+        num_match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*[a-z%]*", raw_lower)
+        if num_match:
+            fval = float(num_match.group(1))
             for opt_l, opt_orig in opt_map.items():
                 try:
                     if float(opt_l) == fval:
                         return opt_orig
                 except ValueError:
                     pass
-        except ValueError:
-            pass
 
-        cn = col_name.lower()
-
-        # 3. Field-specific semantic matching
-
-        # --- VARIATION / SIZE ---
-        if "variation" in cn or "size" in cn:
-            size_keywords = [
-                ("king", "King"),
-                ("queen", "Queen"),
-                ("double", "Double"),
-                ("single", "Single"),
-                ("crib", "Crib"),
-                ("free size", "Free Size"),
-                ("xxxl", "XXXL"),
-                ("3xl", "XXXL"),
-                ("xxl", "XXL"),
-                ("2xl", "XXL"),
-                ("xl", "XL"),
-                ("large", "L"),
-                ("medium", "M"),
-                ("small", "S"),
-                ("xs", "XS"),
-            ]
-            for kw, target in size_keywords:
-                if re.search(rf"\b{kw}\b", raw_lower) or kw in raw_lower:
-                    if target.lower() in opt_map:
-                        return opt_map[target.lower()]
-
-            digits = re.findall(r"\d+", raw_str)
-            if digits:
-                d = digits[0]
-                if f"ind-{d}" in opt_map:
-                    return opt_map[f"ind-{d}"]
-                if d in opt_map:
-                    return opt_map[d]
-
-            if "free size" in opt_map:
-                return opt_map["free size"]
-            if "double" in opt_map:
-                return opt_map["double"]
-            if "m" in opt_map:
-                return opt_map["m"]
-            if "l" in opt_map:
-                return opt_map["l"]
-
-        # --- GST % ---
-        if "gst" in cn:
-            digits = re.findall(r"\d+", raw_str)
-            if digits:
-                d = digits[0]
-                if d in opt_map:
-                    return opt_map[d]
-            if "5" in opt_map:
-                return opt_map["5"]
-
-        # --- HSN ID ---
-        if "hsn" in cn:
-            if raw_str in opt_map:
-                return opt_map[raw_str]
-            for opt_l, opt_orig in opt_map.items():
-                if raw_str[:4] and (raw_str[:4] in opt_l or opt_l.startswith(raw_str[:4])):
-                    return opt_orig
-            for opt_l, opt_orig in opt_map.items():
-                if raw_str[:2] and opt_l.startswith(raw_str[:2]):
-                    return opt_orig
-            return options[0]
-
-        # --- FABRIC / MATERIAL ---
-        if "fabric" in cn or "material" in cn:
-            fabrics = [
-                ("cotton blend", "Cotton Blend"),
-                ("polycotton", "Polycotton"),
-                ("pure cotton", "Cotton"),
-                ("100% cotton", "Cotton"),
-                ("cotton", "Cotton"),
-                ("silk", "Art Silk"),
-                ("polyester", "Polyester"),
-                ("fleece", "Fleece"),
-                ("satin", "Satin"),
-                ("leather", "Leather"),
-                ("eva", "EVA"),
-                ("rubber", "Rubber"),
-                ("pu", "PU"),
-            ]
-            for kw, target in fabrics:
-                if kw in raw_lower and target.lower() in opt_map:
-                    return opt_map[target.lower()]
-
-        # --- COLOR ---
-        if "color" in cn:
-            colors = [
-                ("indigo", "Blue"),
-                ("navy", "Blue"),
-                ("sky blue", "Blue"),
-                ("blue", "Blue"),
-                ("black", "Black"),
-                ("white", "White"),
-                ("cream", "Cream"),
-                ("beige", "Beige"),
-                ("brown", "Brown"),
-                ("green", "Green"),
-                ("olive", "Green"),
-                ("red", "Red"),
-                ("maroon", "Maroon"),
-                ("pink", "Pink"),
-                ("yellow", "Yellow"),
-                ("mustard", "Yellow"),
-                ("grey", "Grey"),
-                ("gray", "Grey"),
-                ("multi", "Multicolor"),
-            ]
-            for kw, target in colors:
-                if kw in raw_lower:
-                    if target.lower() in opt_map:
-                        return opt_map[target.lower()]
-                    for opt_l, opt_orig in opt_map.items():
-                        if target.lower() in opt_l:
-                            return opt_orig
-
-        # --- GENERIC NAME ---
-        if "generic" in cn:
-            for opt_l, opt_orig in opt_map.items():
-                if opt_l in raw_lower or raw_lower in opt_l:
-                    return opt_orig
-
-        # --- PRINT OR PATTERN ---
-        if "pattern" in cn or "print" in cn:
-            patterns = [
-                ("block print", "Batik"),
-                ("dabu", "Batik"),
-                ("jaipuri", "Ethnic"),
-                ("floral", "Floral"),
-                ("flower", "Floral"),
-                ("lotus", "Botanical"),
-                ("solid", "Solid"),
-                ("plain", "Solid"),
-                ("striped", "Striped"),
-                ("check", "Checked"),
-                ("geometric", "Geometric"),
-                ("printed", "Printed"),
-            ]
-            for kw, target in patterns:
-                if kw in raw_lower:
-                    for opt_l, opt_orig in opt_map.items():
-                        if target.lower() in opt_l or kw in opt_l:
-                            return opt_orig
-
-        # --- IDEAL FOR ---
-        if "ideal for" in cn:
-            if "all purpose" in opt_map:
-                return opt_map["all purpose"]
-
-        # 4. Fuzzy substring containment
-        for opt_l, opt_orig in opt_map.items():
-            if opt_l in raw_lower or raw_lower in opt_l:
-                return opt_orig
-
-        # 5. Optional field fallback: return None (prevent invalid brand or group from triggering error)
-        if not is_compulsory:
+        cn = col_name.strip().lower()
+        if cn == "brand" or any(k in cn for k in EXACT_MATCH_COLUMNS):
             return None
 
-        # 6. Compulsory field fallback: pick safest default
-        for safe in ["free size", "all purpose", "others", "other", "standard", "cotton", "india"]:
-            if safe in opt_map:
-                return opt_map[safe]
-
-        return options[0]
+        # Longest options first, consuming matched text, so "Navy Blue" wins over "Blue"
+        remaining = raw_lower
+        found = []
+        for opt_l in sorted(opt_map, key=len, reverse=True):
+            if re.fullmatch(r"[\d.]+", opt_l):
+                continue
+            pattern = rf"(?<![a-z0-9]){re.escape(opt_l)}(?![a-z0-9])"
+            if re.search(pattern, remaining):
+                found.append(opt_map[opt_l])
+                remaining = re.sub(pattern, " ", remaining)
+        return found[0] if len(found) == 1 else None
 
     @classmethod
     def validate_credentials(cls) -> Dict[str, Any]:
@@ -530,6 +418,146 @@ class MeeshoAdapter:
             "message": f"Meesho Agnostic Template Engine ready ({len(available)} category template(s) loaded).",
             "instructions": "Download the generated .xlsx file and upload directly at supplier.meesho.com ➔ Catalog Upload ➔ Add Catalog in Bulk ➔ Upload Completed Template."
         }
+
+    @classmethod
+    def _row_inputs(cls, item: Dict[str, Any]) -> Dict[str, Any]:
+        """Product and draft data for one sheet row. Nothing is defaulted or estimated here."""
+        product = item.get("product")
+        draft = item.get("draft") or {}
+
+        def pick(attr: str, default: Any = None) -> Any:
+            return getattr(product, attr, default) if product else item.get(attr, default)
+
+        def draft_field(key: str) -> Any:
+            return draft.get(key) if isinstance(draft, dict) else getattr(draft, key, None)
+
+        name = pick("name") or ""
+        title = re.sub(r"<[^>]+>", "", draft_field("title") or name).strip()[:95]
+
+        bullets = [re.sub(r"<[^>]+>", "", str(b)).strip() for b in (draft_field("bullets") or [])]
+        desc = re.sub(r"<[^>]+>", "", draft_field("description") or "").strip()
+        if bullets:
+            full_desc = f"{desc}\n\nKey Features:\n" + "\n".join(f"• {b}" for b in bullets)
+        else:
+            full_desc = desc or (pick("description") or "").strip() or None
+
+        price = float(pick("price") or 0)
+        mrp = pick("mrp")
+        stock = pick("stock")
+        attrs = pick("attributes") or {}
+        return {
+            "sku": pick("sku") or "",
+            "name": name,
+            "title": title,
+            "price": price if price > 0 else None,
+            "mrp": float(mrp) if mrp else None,
+            "stock": int(stock) if stock is not None else None,
+            "brand": pick("brand") or None,
+            "attrs": attrs,
+            "images": pick("images") or [],
+            "description": full_desc,
+            "style_id": pick("style_id") or _attr(attrs, "Style Code", "Style ID") or pick("sku") or "",
+        }
+
+    @classmethod
+    def _template_value(cls, cn: str, col_name: str, row: Dict[str, Any], category: str) -> Any:
+        """
+        Value for one official-template column, taken only from the product's own data.
+        Returns None when the data doesn't say; compulsory gaps are reported by the caller.
+        """
+        if "error status" in cn or "error message" in cn:
+            return None
+
+        attrs = row["attrs"]
+        # An attribute named exactly like the column wins, so sellers can set Meesho values directly
+        direct = _attr(attrs, col_name)
+        if "net weight" in cn:
+            return _grams(direct or _attr(attrs, "Net Weight (gms)", "Net Weight", "Weight"))
+        if direct is not None:
+            return direct
+
+        size_text = _attr(attrs, "Size", "Dimensions")
+        included = _attr(attrs, "Included Components", "Included", "Sales Package", "Package Contents", "In The Box")
+        pillow_text = included[included.lower().index("pillow"):] if included and "pillow" in included.lower() else None
+
+        if "product name" in cn:
+            return row["title"]
+        if "variation" in cn:
+            return _attr(attrs, "Size", "Variation")
+        if "meesho price" in cn:
+            return row["price"]
+        if "wrong/defective" in cn:
+            return _attr(attrs, "Wrong/Defective Return Discount", "Wrong/Defective Discount")
+        if cn == "mrp":
+            return row["mrp"]
+        if "gst" in cn:
+            return _attr(attrs, "GST %", "GST Rate", "GST")
+        if "hsn" in cn:
+            return _attr(attrs, "HSN ID", "HSN Code", "HSN")
+        if "inventory" in cn:
+            return row["stock"]
+        img = re.match(r"image (\d)", cn)
+        if img:
+            n = int(img.group(1))
+            return row["images"][n - 1] if len(row["images"]) >= n else None
+        if "color" in cn or "colour" in cn:
+            return _attr(attrs, "Color", "Colour")
+        if "fabric" in cn or "material" in cn:
+            return _attr(attrs, "Fabric", "Material")
+        if "generic name" in cn:
+            return _attr(attrs, "Generic Name") or category
+        if "included components" in cn:
+            return included
+        if "net quantity" in cn:
+            return _attr(attrs, "Net Quantity", "Net Quantity (N)")
+        if "pillow length" in cn or "pillow width" in cn:
+            dims = _inch_dims(pillow_text)
+            return _fmt_num(dims[0] if "length" in cn else dims[1]) if dims else None
+        if "no. of pillow" in cn:
+            m = re.search(r"(\d+)\s*pillow", included or "", flags=re.IGNORECASE)
+            return m.group(1) if m else None
+        if "bedsheet length" in cn or "bedsheet width" in cn:
+            dims = _inch_dims(size_text)
+            return _fmt_num(dims[0] if "length" in cn else dims[1]) if dims else None
+        if ("length" in cn or "width" in cn) and "cm" in cn:
+            dims = _inch_dims(size_text)
+            return round((dims[0] if "length" in cn else dims[1]) * 2.54) if dims else None
+        if "pattern" in cn or "print" in cn:
+            return _attr(attrs, "Pattern", "Print")
+        if "product id" in cn or "style id" in cn:
+            return row["style_id"]
+        if "sku id" in cn or "seller sku" in cn:
+            return row["sku"]
+        if "brand name" in cn or cn == "brand":
+            return row["brand"]
+        if "product description" in cn:
+            return row["description"]
+        if "group id" in cn:
+            return _attr(attrs, "Group ID", "Group")
+        return None
+
+    @classmethod
+    def _duplicate_name_problems(cls, name_rows: Dict[str, List[Dict[str, Any]]], category: str) -> List[Dict[str, Any]]:
+        """
+        Meesho treats rows sharing a Product Name as sizes of one product, then rejects them when
+        their attributes or images differ. Rows may share a name only as distinct sizes of one Style ID.
+        """
+        problems = []
+        for rows in name_rows.values():
+            if len(rows) < 2:
+                continue
+            sizes = [_attr(r["attrs"], "Size", "Variation") for r in rows]
+            same_style = len({r["style_id"] for r in rows}) == 1
+            if same_style and len(set(sizes)) == len(sizes):
+                continue
+            for r in rows:
+                others = ", ".join(o["sku"] for o in rows if o is not r)
+                problems.append({
+                    "sku": r["sku"], "category": category, "field": "Product Name",
+                    "reason": f"same Product Name as {others}; Meesho would merge them as sizes of one product",
+                    "blocking": True,
+                })
+        return problems
 
     @classmethod
     def populate_template(
@@ -569,209 +597,51 @@ class MeeshoAdapter:
             bottom=Side(style="thin", color="E0E0E0"),
         )
 
-        brand_default = getattr(settings, "DEFAULT_BRAND", "Gulmohar Home")
+        category = template_info.get("category", "")
+        problems: List[Dict[str, Any]] = []
+        name_rows: Dict[str, List[Dict[str, Any]]] = {}
 
         # Ingest each product row starting at Row 5
         for idx, item in enumerate(products_with_drafts):
             target_row = 5 + idx
-            product = item.get("product")
-            draft = item.get("draft") or {}
+            row = cls._row_inputs(item)
 
-            # Normalize product fields
-            p_sku = getattr(product, "sku", "") if product else item.get("sku", "")
-            p_name = getattr(product, "name", "") if product else item.get("name", "")
-            p_price = float(getattr(product, "price", 0) if product else item.get("price", 0))
-            p_mrp = float(getattr(product, "mrp", None) or item.get("mrp") or round(p_price * 1.3, 2))
-            p_stock = int(getattr(product, "stock", 50) if product else item.get("stock", 50))
-            p_brand = getattr(product, "brand", "") if product else item.get("brand", brand_default)
-            p_attrs = getattr(product, "attributes", {}) if product else item.get("attributes", {})
-            p_images = getattr(product, "images", []) if product else item.get("images", [])
-
-            # Title: clean, strictly under 100 chars, no HTML
-            raw_title = (draft.get("title") if isinstance(draft, dict) else getattr(draft, "title", None)) or p_name
-            meesho_title = re.sub(r"<[^>]+>", "", raw_title).strip()[:95]
-
-            # Pricing:
-            # Meesho Price = competitive regular selling price (with all-reason return)
-            # Wrong/Defective Return Discount = recommended ₹22 discount
-            meesho_price = round(p_price * 0.95, 2) if p_price > 0 else 0.0
-            wrong_return_discount = 22.0
-
-            # Description: plain text, clean features, no HTML
-            bullets = (draft.get("bullets") if isinstance(draft, dict) else getattr(draft, "bullets", [])) or []
-            desc_text = (draft.get("description") if isinstance(draft, dict) else getattr(draft, "description", "")) or ""
-            desc_clean = re.sub(r"<[^>]+>", "", desc_text).strip()
-            if bullets:
-                clean_bullets = [re.sub(r"<[^>]+>", "", str(b)).strip() for b in bullets]
-                full_desc = f"{desc_clean}\n\nKey Features:\n" + "\n".join([f"• {b}" for b in clean_bullets])
-            else:
-                full_desc = desc_clean or f"High quality {p_name} by {p_brand}."
-
-            # Image URLs
-            img1 = p_images[0] if len(p_images) > 0 else ""
-            img2 = p_images[1] if len(p_images) > 1 else ""
-            img3 = p_images[2] if len(p_images) > 2 else ""
-            img4 = p_images[3] if len(p_images) > 3 else ""
-
-            # Legal metrology & compliance
-            mfg_name = f"{p_brand} Crafts"
-            mfg_addr = "Sanganer Artisan Cluster, Jaipur, Rajasthan"
-            mfg_pin = "302029"
-            packer_name = f"{p_brand} Logistics"
-            packer_addr = "Sitapura Industrial Area, Jaipur"
-            packer_pin = "302022"
-
-            # Populate columns based on dynamic header title in Row 3
             for col_idx, col_name in col_map.items():
                 cell = ws.cell(row=target_row, column=col_idx)
                 cell.font = font_data
                 cell.border = border_thin
                 cell.alignment = Alignment(vertical="center")
 
-                val = None
                 cn = col_name.strip().lower()
+                val = cls._template_value(cn, col_name, row, category)
 
-                # System columns B & C must be left blank
-                if "error status" in cn or "error message" in cn:
-                    val = None
-                elif "product name" in cn:
-                    val = meesho_title
-                elif "variation" in cn:
-                    val = str(p_attrs.get("Size") or p_attrs.get("Variation") or p_attrs.get("Dimensions") or "Free Size")
-                elif "meesho price" in cn:
-                    val = meesho_price
-                elif "wrong/defective" in cn:
-                    val = wrong_return_discount
-                elif cn == "mrp":
-                    val = p_mrp
-                elif "gst" in cn:
-                    val = float(p_attrs.get("GST %") or p_attrs.get("GST Rate") or p_attrs.get("GST") or 5.0)
-                elif "hsn" in cn:
-                    val = str(p_attrs.get("HSN ID") or p_attrs.get("HSN Code") or p_attrs.get("HSN") or "6109")
-                elif "net weight" in cn:
-                    raw_wt = p_attrs.get("Net Weight (gms)") or p_attrs.get("Net Weight") or p_attrs.get("Weight") or 500
-                    try:
-                        val = int(raw_wt)
-                    except Exception:
-                        val = 500
-                elif "inventory" in cn:
-                    val = p_stock
-                elif "country of origin" in cn:
-                    val = "India"
-                elif "manufacturer name" in cn:
-                    val = mfg_name
-                elif "manufacturer address" in cn:
-                    val = mfg_addr
-                elif "manufacturer pincode" in cn:
-                    val = mfg_pin
-                elif "packer name" in cn:
-                    val = packer_name
-                elif "packer address" in cn:
-                    val = packer_addr
-                elif "packer pincode" in cn:
-                    val = packer_pin
-                elif "importer name" in cn or "importer details" in cn:
-                    val = "Not Applicable (Made in India)"
-                elif "importer address" in cn:
-                    val = "Not Applicable"
-                elif "importer pincode" in cn:
-                    val = "000000"
-                elif "image 1" in cn:
-                    val = img1
-                elif "image 2" in cn:
-                    val = img2
-                elif "image 3" in cn:
-                    val = img3
-                elif "image 4" in cn:
-                    val = img4
-                elif "color" in cn or "colour" in cn:
-                    val = (
-                        p_attrs.get("Color")
-                        or p_attrs.get("Colour")
-                        or p_attrs.get("color")
-                        or p_attrs.get("colour")
-                    )
-                elif "fabric" in cn or "material" in cn:
-                    val = (
-                        p_attrs.get("Fabric")
-                        or p_attrs.get("Material")
-                        or p_attrs.get("fabric")
-                        or p_attrs.get("material")
-                    )
-                elif "generic name" in cn:
-                    val = (
-                        p_attrs.get("Generic Name")
-                        or template_info.get("category", "")
-                    )
-                elif "included components" in cn:
-                    val = p_attrs.get("Included") or p_attrs.get("Included Components")
-                elif "pillow length" in cn:
-                    val = "27"
-                elif "pillow width" in cn:
-                    val = "17"
-                elif "no. of pillow" in cn:
-                    var_low = str(p_attrs.get("Size") or "").lower()
-                    val = "1" if "single" in var_low else "2"
-                elif "bedsheet length" in cn or cn == "length size":
-                    var_low = str(p_attrs.get("Size") or "").lower()
-                    val = "108" if "king" in var_low or "108" in var_low else ("90" if "single" in var_low or "60" in var_low else "100")
-                elif "bedsheet width" in cn or cn == "width size":
-                    var_low = str(p_attrs.get("Size") or "").lower()
-                    val = "108" if "king" in var_low or "108" in var_low else ("60" if "single" in var_low or "60" in var_low else "90")
-                elif "product length (cm)" in cn or (("length" in cn) and "cm" in cn):
-                    var_low = str(p_attrs.get("Size") or "").lower()
-                    val = 274 if "king" in var_low else (228 if "single" in var_low else 254)
-                elif "product width (cm)" in cn or (("width" in cn) and "cm" in cn):
-                    var_low = str(p_attrs.get("Size") or "").lower()
-                    val = 274 if "king" in var_low else (152 if "single" in var_low else 228)
-                elif "product id" in cn or "style id" in cn:
-                    # Style Code remains the same for size variants of the EXACT same design.
-                    # Each standalone product in the catalog must have its own Style Code (e.g. p_sku).
-                    # Do NOT truncate by '-' (e.g. 'JBP-101' -> 'JBP') as that erroneously groups
-                    # different designs together as size variants of a single product, triggering
-                    # Meesho QC errors ('Attributes/Name/Images cannot be different for different sizes').
-                    val = (
-                        getattr(product, "style_id", None)
-                        or (p_attrs.get("Style Code") if isinstance(p_attrs, dict) else None)
-                        or (p_attrs.get("Style ID") if isinstance(p_attrs, dict) else None)
-                        or p_sku
-                    )
-                elif "sku id" in cn or "seller sku" in cn:
-                    val = p_sku
-                elif "brand name" in cn or cn == "brand":
-                    val = p_brand
-                elif "product description" in cn:
-                    val = full_desc
-                elif "group id" in cn:
-                    # Group ID is optional. If empty, Meesho treats the product as an independent catalog.
-                    val = (
-                        p_attrs.get("Group ID")
-                        or p_attrs.get("Group")
-                        if isinstance(p_attrs, dict)
-                        else None
-                    )
-                else:
-                    # Dynamic attribute lookup from product.attributes
-                    # Search for direct or fuzzy key matches
-                    for k, v in p_attrs.items():
-                        k_norm = k.strip().lower()
-                        if k_norm == cn or k_norm in cn or cn in k_norm:
-                            val = v
-                            break
+                # Write dropdown columns only as an option the template itself lists
+                if col_idx in dropdowns and val is not None and str(val).strip():
+                    matched = cls._match_dropdown_option(val, dropdowns[col_idx], col_name=col_name)
+                    if matched is None:
+                        problems.append({
+                            "sku": row["sku"], "category": category, "field": col_name,
+                            "reason": f"'{val}' is not one of the template's options; add a '{col_name}' attribute "
+                                      f"set to one of them",
+                            "blocking": col_idx in compulsory_cols,
+                        })
+                    val = matched
 
-                # If this column has dropdown validation options in Validation Sheet:
-                # Snap val to an exact allowed dropdown option to prevent invalid errors
-                if col_idx in dropdowns:
-                    is_comp = col_idx in compulsory_cols
-                    val = cls._match_dropdown_option(
-                        val,
-                        dropdowns[col_idx],
-                        col_name=col_name,
-                        is_compulsory=is_comp
-                    )
+                if col_idx in compulsory_cols and (val is None or not str(val).strip()):
+                    if not any(pr["sku"] == row["sku"] and pr["field"] == col_name for pr in problems):
+                        problems.append({
+                            "sku": row["sku"], "category": category, "field": col_name,
+                            "reason": "compulsory and missing from the product's data",
+                            "blocking": True,
+                        })
 
                 cell.value = val
             ws.row_dimensions[target_row].height = 22
+            name_rows.setdefault(row["title"].lower(), []).append(row)
+
+        problems.extend(cls._duplicate_name_problems(name_rows, category))
+        if any(pr["blocking"] for pr in problems):
+            raise MeeshoExportIncomplete(problems)
 
         # Backward compatibility: Add a 'Validate Sheet' alias tab if not present
         # to ensure existing automated tests asserting wb['Validate Sheet'] pass seamlessly
@@ -827,17 +697,26 @@ class MeeshoAdapter:
             grouped.setdefault(cat, []).append(item)
 
         generated_files: List[Tuple[str, io.BytesIO]] = []
+        problems: List[Dict[str, Any]] = []
 
         for cat_name, cat_items in grouped.items():
             tmpl = cls.find_template(cat_name)
-            if tmpl:
-                buf = cls.populate_template(tmpl, cat_items)
-            else:
-                buf = cls._generate_synthetic_workbook(cat_name, cat_items)
+            try:
+                if tmpl:
+                    buf = cls.populate_template(tmpl, cat_items)
+                else:
+                    buf = cls._generate_synthetic_workbook(cat_name, cat_items)
+            except MeeshoExportIncomplete as e:
+                # Keep going so one response lists every category's problems
+                problems.extend(e.problems)
+                continue
 
             safe_cat = re.sub(r"[^a-zA-Z0-9_-]", "_", cat_name)
             file_name = f"ListingPilot_Meesho_{safe_cat}.xlsx"
             generated_files.append((file_name, buf))
+
+        if problems:
+            raise MeeshoExportIncomplete(problems)
 
         # Single category export or default non-zip export
         if len(generated_files) == 1 or not force_zip:
@@ -984,65 +863,52 @@ class MeeshoAdapter:
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             cell.border = border_thin
 
+        problems: List[Dict[str, Any]] = []
+        name_rows: Dict[str, List[Dict[str, Any]]] = {}
         for item in products_with_drafts:
-            product = item.get("product")
-            draft = item.get("draft") or {}
-
-            p_sku = getattr(product, "sku", "") if product else item.get("sku", "")
-            p_name = getattr(product, "name", "") if product else item.get("name", "")
-            p_price = float(getattr(product, "price", 0) if product else item.get("price", 0))
-            p_mrp = float(getattr(product, "mrp", None) or item.get("mrp") or round(p_price * 1.3, 2))
-            p_stock = int(getattr(product, "stock", 50) if product else item.get("stock", 50))
-            p_brand = getattr(product, "brand", "") if product else item.get("brand", "Gulmohar Home")
-            p_attrs = getattr(product, "attributes", {}) if product else item.get("attributes", {})
-            p_images = getattr(product, "images", []) if product else item.get("images", [])
-
-            raw_title = (draft.get("title") if isinstance(draft, dict) else getattr(draft, "title", None)) or p_name
-            meesho_title = re.sub(r"<[^>]+>", "", raw_title).strip()[:95]
-            meesho_price = round(p_price * 0.95, 2) if p_price > 0 else 0.0
-
-            bullets = (draft.get("bullets") if isinstance(draft, dict) else getattr(draft, "bullets", [])) or []
-            desc_text = (draft.get("description") if isinstance(draft, dict) else getattr(draft, "description", "")) or ""
-            if bullets:
-                full_desc = f"{desc_text}\n\nKey Features:\n" + "\n".join([f"• {b}" for b in bullets])
-            else:
-                full_desc = desc_text or f"High quality {p_name} by {p_brand}."
-
-            img1 = p_images[0] if len(p_images) > 0 else ""
-            img2 = p_images[1] if len(p_images) > 1 else ""
-            img3 = p_images[2] if len(p_images) > 2 else ""
-            img4 = p_images[3] if len(p_images) > 3 else ""
+            row = cls._row_inputs(item)
+            attrs = row["attrs"]
+            images = row["images"]
 
             row_data = [
-                meesho_title,
-                str(p_attrs.get("Size") or "Free Size"),
-                meesho_price,
-                22.0,
-                p_mrp,
-                float(p_attrs.get("GST %") or 5.0),
-                str(p_attrs.get("HSN ID") or "6109"),
-                500,
-                p_stock,
-                "India",
-                f"{p_brand} Crafts",
-                "Sanganer Artisan Cluster, Jaipur, Rajasthan",
-                f"{p_brand} Logistics",
-                "Sitapura Industrial Area, Jaipur",
-                "Not Applicable (Made in India)",
-                str(p_attrs.get("Material") or p_attrs.get("Fabric") or "Standard"),
-                str(p_attrs.get("Generic Name") or category),
-                "1",
-                str(p_attrs.get("Color") or "Standard"),
-                "Handle with care",
-                img1,
-                img2,
-                img3,
-                img4,
-                p_sku,
-                p_brand,
-                full_desc,
+                row["title"],
+                _attr(attrs, "Size", "Variation"),
+                row["price"],
+                _attr(attrs, "Wrong/Defective Return Discount", "Wrong/Defective Discount"),
+                row["mrp"],
+                _attr(attrs, "GST %", "GST Rate", "GST"),
+                _attr(attrs, "HSN ID", "HSN Code", "HSN"),
+                _grams(_attr(attrs, "Net Weight (gms)", "Net Weight", "Weight")),
+                row["stock"],
+                _attr(attrs, "Country of Origin"),
+                _attr(attrs, "Manufacturer Name"),
+                _attr(attrs, "Manufacturer Address"),
+                _attr(attrs, "Packer Name"),
+                _attr(attrs, "Packer Address"),
+                _attr(attrs, "Importer Details", "Importer Name"),
+                _attr(attrs, "Material", "Fabric"),
+                _attr(attrs, "Generic Name") or category,
+                _attr(attrs, "Net Quantity", "Net Quantity (N)"),
+                _attr(attrs, "Color", "Colour"),
+                _attr(attrs, "Care Instructions", "Care"),
+                *[images[i] if len(images) > i else None for i in range(4)],
+                row["sku"],
+                row["brand"],
+                row["description"],
             ]
+            for header, val in zip(MEESHO_HEADERS, row_data):
+                if header.endswith("*") and (val is None or not str(val).strip()):
+                    problems.append({
+                        "sku": row["sku"], "category": category, "field": header.rstrip(" *"),
+                        "reason": "compulsory and missing from the product's data",
+                        "blocking": True,
+                    })
             ws_val.append(row_data)
+            name_rows.setdefault(row["title"].lower(), []).append(row)
+
+        problems.extend(cls._duplicate_name_problems(name_rows, category))
+        if problems:
+            raise MeeshoExportIncomplete(problems)
 
         buf = io.BytesIO()
         wb.save(buf)

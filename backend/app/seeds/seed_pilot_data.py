@@ -5,7 +5,7 @@ import openpyxl
 # Add backend directory to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from app.core.database import SessionLocal, engine, Base
+from app.core.database import SessionLocal, engine, Base, check_connection
 from app.models.product import Product
 from app.services.catalogue_service import CatalogueService
 
@@ -454,6 +454,7 @@ PILOT_PRODUCTS = [
 ]
 
 def seed_database():
+    check_connection()
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:

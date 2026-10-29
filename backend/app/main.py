@@ -1,17 +1,23 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.core.database import engine, Base
+from app.core.database import engine, Base, check_connection
 from app.api.v1.api import api_router
 from app.models import Product, ListingDraft  # Ensure models are imported for Base.metadata.create_all
 
-# Create tables
-try:
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Refuse to start without Neon rather than serve requests that can't reach a database
+    check_connection()
     Base.metadata.create_all(bind=engine)
-except Exception as e:
-    print(f"Database table initialization notice: {e}")
+    print(f"[ListingPilot] Connected to Neon ({engine.url.host}).", flush=True)
+    yield
+
 
 app = FastAPI(
+    lifespan=lifespan,
     title=settings.PROJECT_NAME,
     description="Marketplace listing automation engine for Amazon, Flipkart, and Meesho",
     version="1.0.0",

@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     
     # Database: Exclusively Neon PostgreSQL
     DATABASE_URL: str = ""
+    # Tests only: a separate Neon branch/database. Its tables are dropped and recreated each run.
+    TEST_DATABASE_URL: str = ""
     
     # CORS
     BACKEND_CORS_ORIGINS: List[str] = [
@@ -24,7 +26,9 @@ class Settings(BaseSettings):
     DEFAULT_BRAND: str = "Gulmohar Home"
     
     # AI Content Engine (OpenRouter / Claude API)
-    AI_PROVIDER: str = "openrouter"  # "openrouter" or "anthropic"
+    AI_PROVIDER: str = "openrouter"  # "openrouter", "groq" or "anthropic"
+    GROQ_API_KEY: Optional[str] = None
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
     OPENROUTER_API_KEY: Optional[str] = None
     OPENROUTER_MODEL: str = "minimax/minimax-m3.1-flash"
     ANTHROPIC_API_KEY: Optional[str] = None

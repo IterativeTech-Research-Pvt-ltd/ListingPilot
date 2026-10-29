@@ -7,7 +7,7 @@ from app.main import app
 from app.models.product import Product
 from app.models.draft import ListingDraft
 from app.services.flipkart_adapter import FlipkartAdapter
-from app.services.meesho_adapter import MeeshoAdapter
+from app.services.meesho_adapter import MeeshoAdapter, MeeshoExportIncomplete
 from app.services.rule_engine import RuleEngine
 
 client = TestClient(app)
@@ -66,20 +66,12 @@ def test_meesho_adapter():
             }
         }
     ]
-    buf = MeeshoAdapter.generate_bulk_upload_file("Bedsheets", sample_items)
-    assert isinstance(buf, io.BytesIO)
-    
-    # Verify openpyxl can load the generated workbook
-    wb = openpyxl.load_workbook(buf)
-    assert "Validate Sheet" in wb.sheetnames
-    assert "Instructions" in wb.sheetnames
-    assert "Example Sheet" in wb.sheetnames
-    ws = wb["Validate Sheet"]
-    header_values = [cell.value for cell in ws[1]]
-    assert "Product Name *" in header_values
-    assert "Seller SKU ID *" in header_values
-    assert "Meesho Price (₹) *" in header_values
-    assert "Wrong/Defective Price (₹) *" in header_values
+    # The item has no HSN, GST, weight or legal-metrology data: no file, and the gaps are named
+    with pytest.raises(MeeshoExportIncomplete) as exc:
+        MeeshoAdapter.generate_bulk_upload_file("Bedsheets", sample_items)
+    missing = {p["field"] for p in exc.value.problems if p["sku"] == "JBP-101"}
+    assert {"Manufacturer Name", "Country of Origin"} <= missing
+    assert any(f.startswith("HSN") for f in missing)  # "HSN ID" in the official template
 
 def test_multichannel_rule_engine():
     # Test title limits per marketplace:
@@ -158,19 +150,10 @@ def test_flipkart_publish_flow():
     assert pub_data["draft"]["external_listing_id"].startswith("LST")
 
 def test_meesho_bulk_export_endpoint():
+    # Seeded pilot products lack compulsory Meesho fields, so the export is refused, not faked
     res = client.get("/api/v1/drafts/meesho/export")
-    assert res.status_code == 200
-    assert res.headers["content-type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    
-    # Verify openpyxl can load the streamed content
-    wb = openpyxl.load_workbook(io.BytesIO(res.content))
-    assert "Validate Sheet" in wb.sheetnames
-    assert "Instructions" in wb.sheetnames
-    assert "Example Sheet" in wb.sheetnames
-    ws = wb["Validate Sheet"]
-    header_values = [cell.value for cell in ws[1]]
-    assert "Product Name *" in header_values
-    assert "Meesho Price (₹) *" in header_values
+    assert res.status_code == 422
+    assert res.json()["detail"]["problems"]
 
 
 def test_meesho_templates_endpoint():
@@ -198,11 +181,7 @@ def test_meesho_categories_endpoint():
 
 
 def test_meesho_zip_export_endpoint():
-    import zipfile
     res = client.get("/api/v1/drafts/meesho/export?as_zip=true")
-    assert res.status_code == 200
-    assert res.headers["content-type"] == "application/zip"
-    zf = zipfile.ZipFile(io.BytesIO(res.content))
-    namelist = zf.namelist()
-    assert len(namelist) > 0
-    assert any(n.endswith(".xlsx") for n in namelist)
+    assert res.status_code == 422
+    categories = {p["category"] for p in res.json()["detail"]["problems"]}
+    assert len(categories) > 1  # every category's problems are reported in one response

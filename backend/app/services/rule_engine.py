@@ -3,6 +3,7 @@ from typing import Dict, Any, List
 from app.models.product import Product
 from app.services.template_generator import CATEGORIES_INFO
 from app.services.settings_service import SettingsService
+from app.services.meesho_adapter import MEESHO_FLAGGED_WORDS
 
 HTML_TAG_PATTERN = re.compile(r"<[^>]+>", re.IGNORECASE)
 
@@ -179,6 +180,18 @@ class RuleEngine:
                     "field": "description",
                     "message": "HTML tags detected in description. Meesho bulk upload sheets only accept plain text."
                 })
+
+            # Words Meesho's catalogue QC flags as warnings in the product description
+            if mp == "meesho":
+                meesho_text = " ".join([title, desc] + list(bullets))
+                flagged = [w for w in MEESHO_FLAGGED_WORDS if re.search(rf"\b{w}\b", meesho_text, re.IGNORECASE)]
+                if flagged:
+                    issues.append({
+                        "level": "warning",
+                        "kind": "meesho_flagged_word",
+                        "field": "description",
+                        "message": f"Meesho QC flags {', '.join(repr(w) for w in flagged)} in listing text. Reword to avoid the warning."
+                    })
 
             # Check Bullets
             if mp == "amazon" and len(bullets) < 5:
