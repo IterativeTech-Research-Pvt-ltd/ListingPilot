@@ -458,42 +458,12 @@ def seed_database():
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
-        created, updated = CatalogueService.batch_upsert_products(db, PILOT_PRODUCTS)
-        print(f"Seeding completed: {created} products created, {updated} products updated.")
-        
-        # Also create 35 additional varied SKUs to reach a robust pilot dataset of 50+ SKUs
-        existing_count = db.query(Product).count()
-        if existing_count < 50:
-            extra_products = []
-            categories = ["Bedsheets", "Pooja items", "Kurtas", "Planters", "Ethnic footwear", "Quilts"]
-            for i in range(1, 41):
-                cat = categories[i % len(categories)]
-                extra_products.append({
-                    "sku": f"PILOT-{cat[:3].upper()}-{100 + i}",
-                    "name": f"Handmade {cat.lower()} variant {i} - artisan collection",
-                    "category": cat,
-                    "brand": "Gulmohar Home",
-                    "mrp": 1000 + (i * 50),
-                    "price": 750 + (i * 40),
-                    "stock": 10 + (i * 3),
-                    "images": [
-                        "https://images.unsplash.com/photo-1522771739844-6a9f6d5f14af",
-                        "https://images.unsplash.com/photo-1584100936595-c0654b55a2e2",
-                        "https://images.unsplash.com/photo-1616486338812-3dadae4b4ace"
-                    ] if i % 4 != 0 else ["https://images.unsplash.com/photo-1522771739844-6a9f6d5f14af"],  # Simulate a few low photos
-                    "attributes": {
-                        "Material": "Pure cotton / brass / ceramic",
-                        "Size": "Standard",
-                        "Care": "Clean according to product instructions"
-                    } if i % 5 != 0 else {},  # Simulate a few missing attributes for validation dashboard
-                    "description": f"Authentic handcrafted {cat.lower()} made by local craftsmen in Rajasthan."
-                })
-            c2, u2 = CatalogueService.batch_upsert_products(db, extra_products)
-            print(f"Added {c2} additional pilot SKUs to total {db.query(Product).count()} products in catalogue.")
+        # The database is the source of truth: only add SKUs that don't exist, never overwrite them
+        missing = [p for p in PILOT_PRODUCTS if not CatalogueService.get_by_sku(db, p["sku"])]
+        created, _ = CatalogueService.batch_upsert_products(db, missing)
+        print(f"Seeding completed: {created} products created, {len(PILOT_PRODUCTS) - len(missing)} already present (left unchanged).")
     finally:
         db.close()
 
 if __name__ == "__main__":
     seed_database()
-# meesho/flipkart no picture/title/sku-id repeat
-# amazon 

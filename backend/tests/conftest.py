@@ -1,14 +1,14 @@
 import os
 import tempfile
-from urllib.parse import urlparse
 
 # Keep tests away from real data; must be set before app imports.
-# The settings store lives in a throwaway directory per run; the database is a separate Neon branch.
+# The settings store lives in a throwaway directory per run; the database is a separate test database.
 _TEST_DIR = tempfile.mkdtemp(prefix="listingpilot-tests-")
 os.environ["LISTINGPILOT_SETTINGS_FILE"] = os.path.join(_TEST_DIR, "dynamic_settings.json")
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
 from app.core import database
@@ -22,18 +22,19 @@ def _test_database_url() -> str:
     url = (settings.TEST_DATABASE_URL or "").strip()
     if not url.startswith(("postgresql://", "postgres://")):
         raise pytest.UsageError(
-            "TEST_DATABASE_URL must point at a separate Neon branch (postgresql://...); see .env.example."
+            "TEST_DATABASE_URL must point at a separate test database (postgresql://...); see .env.example."
         )
-    test, main = urlparse(url), urlparse(settings.DATABASE_URL or "")
-    if (test.hostname, test.path) == (main.hostname, main.path):
+    # Supabase pooler hosts are shared by every project; the project shows up in the username
+    test, main = make_url(url), make_url((settings.DATABASE_URL or "").strip() or "postgresql://")
+    if (test.username, test.host, test.port or 5432, test.database) == (main.username, main.host, main.port or 5432, main.database):
         raise pytest.UsageError(
-            "TEST_DATABASE_URL is the app's DATABASE_URL. Tests drop and recreate tables; use a separate Neon branch."
+            "TEST_DATABASE_URL is the app's DATABASE_URL. Tests drop and recreate tables; use a separate database."
         )
     return url.replace("postgres://", "postgresql://", 1).replace("postgresql://", "postgresql+psycopg2://", 1)
 
 
 test_engine = create_engine(
-    _test_database_url(), connect_args={"connect_timeout": database.NEON_CONNECT_TIMEOUT_S}, pool_pre_ping=True
+    _test_database_url(), connect_args={"connect_timeout": database.DB_CONNECT_TIMEOUT_S}, pool_pre_ping=True
 )
 TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 # Code that opens sessions directly (Celery tasks) must hit the test branch too, never the app database
@@ -62,7 +63,7 @@ def setup_test_database():
     try:
         database.check_connection(test_engine)
     except RuntimeError as e:
-        pytest.exit(f"Neon test branch: {e}", returncode=3)
+        pytest.exit(f"Test database: {e}", returncode=3)
     # Fresh tables every run so leftovers from earlier runs can't leak into results
     Base.metadata.drop_all(bind=test_engine)
     Base.metadata.create_all(bind=test_engine)

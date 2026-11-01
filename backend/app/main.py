@@ -9,10 +9,10 @@ from app.models import Product, ListingDraft  # Ensure models are imported for B
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Refuse to start without Neon rather than serve requests that can't reach a database
+    # Refuse to start without the database rather than serve requests that can't reach it
     check_connection()
     Base.metadata.create_all(bind=engine)
-    print(f"[ListingPilot] Connected to Neon ({engine.url.host}).", flush=True)
+    print(f"[ListingPilot] Connected to the database ({engine.url.host}/{engine.url.database}).", flush=True)
     yield
 
 
@@ -43,6 +43,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # The dashboard names downloaded exports from this header
+    expose_headers=["Content-Disposition"],
 )
 
 @app.middleware("http")

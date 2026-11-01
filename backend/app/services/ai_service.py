@@ -50,7 +50,7 @@ Strict Marketplace Rules:
 2. 5 Bullet Points: Exactly 5 bullets. Start each bullet with a short capitalized headline followed by an em-dash or colon (e.g., "CORE PERFORMANCE — ..."). Focus on: (1) Primary Breakthrough / Core Benefit, (2) Material & Build Quality, (3) Dimensions, Capacity & Fit, (4) Everyday Versatility & Inclusions, (5) Care Instructions & Longevity.
 3. Description: 2-3 concise paragraphs highlighting core utility, build quality, and everyday benefits.
 4. Keywords: 5 to 8 relevant search phrases shoppers actually search for. Total keywords must fit within 250 bytes.
-5. Technical Specs: Structured dictionary of 6-10 granular specifications for Amazon's Technical Details table.
+5. Technical Specs: Structured dictionary for Amazon's Technical Details table with ONLY the specifications stated in the product attributes. Leave out anything they don't state; never add warranty, weight, country of origin, manufacturer or certifications that weren't provided.
 6. A+ Enhanced Brand Content: Include hero headline, inspiring brand story, 3 feature spotlight cards (title, subtitle, description), and a comparison table matrix comparing this model with alternatives.
 7. PROHIBITED: NEVER include promotional or policy claims like "Free delivery", "Best seller", "100% guarantee", "Cheapest", "Money back".
 
@@ -111,7 +111,7 @@ Product Name: {product.name}
 Category: {product.category}
 Brand: {brand}
 Selling Price: ₹{product.price}
-Specs & Attributes: {attrs_str if attrs_str else 'Handcrafted artisan quality'}
+Specs & Attributes: {attrs_str if attrs_str else 'none provided (do not invent any)'}
 Notes: {product.description or ''}
 Target Marketplace: {marketplace.upper()}
 
@@ -377,119 +377,28 @@ Meesho rules:
     @classmethod
     def _enrich_with_apple_grade_specs_and_aplus(cls, product: Product, brand: str, draft: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Enriches draft with Apple-caliber technical details tables and A+ Enhanced Brand Content
-        (Hero Headline, Feature Spotlight Cards, and Multi-Model Comparison Table).
+        Adds the product's own attributes to the technical specs, filed under the Amazon
+        product-type field they match. Nothing is defaulted: a spec or A+ block the model didn't
+        write and the catalogue doesn't hold stays absent.
         """
-        p_name = product.name or "Product"
-        category = product.category or "General"
         attrs = product.attributes or {}
-
-        # 1. Exhaustive Category-Specific Technical Details Table via AmazonPTDService
         specs = dict(draft.get("technical_specs") or {})
-        # Merge raw attributes
         for k, v in attrs.items():
             if v and k not in specs:
                 specs[str(k)] = str(v)
 
-        ptd_defn = AmazonPTDService.get_ptd_definition(category, p_name)
-        sample_specs = ptd_defn.get("sample_specs", {})
-        req_fields = ptd_defn.get("required_fields", [])
-        opt_fields = ptd_defn.get("optional_fields", [])
-
-        # Match or populate category-specific specs
-        for field in req_fields + opt_fields[:4]:
-            if field not in specs:
-                field_lower = field.lower()
-                matched_val = None
-                for ak, av in attrs.items():
-                    if ak.lower() in field_lower or field_lower in ak.lower():
-                        matched_val = av
-                        break
-                if matched_val:
-                    specs[field] = str(matched_val)
-                elif field in sample_specs:
-                    specs[field] = str(sample_specs[field])
-
-        if "Country of Origin" not in specs:
-            specs["Country of Origin"] = attrs.get("Country of origin") or attrs.get("Country of Origin") or "India"
+        ptd_defn = AmazonPTDService.get_ptd_definition(product.category or "General", product.name or "")
+        for field in ptd_defn.get("required_fields", []) + ptd_defn.get("optional_fields", [])[:4]:
+            if field in specs:
+                continue
+            field_lower = field.lower()
+            for ak, av in attrs.items():
+                if av and (ak.lower() in field_lower or field_lower in ak.lower()):
+                    specs[field] = str(av)
+                    break
 
         draft["technical_specs"] = specs
-
-        main_spec = attrs.get("Material") or attrs.get("Fabric") or attrs.get("Processor") or specs.get("Material") or specs.get("Processor") or "Premium Grade Build"
-        size_spec = attrs.get("Size") or attrs.get("Dimensions") or specs.get("Item Dimensions") or specs.get("Dimensions") or "Standard Sizing"
-        color_spec = attrs.get("Colour") or attrs.get("Color") or specs.get("Color") or specs.get("Dial Color") or "Signature Finish"
-        included_spec = attrs.get("Included") or attrs.get("Sales Package") or specs.get("In The Box") or specs.get("Included Components") or "1 Complete Unit + User Documentation"
-        warranty_spec = attrs.get("Warranty") or specs.get("Warranty") or "1 Year Manufacturer Assurance"
-
-        # 2. Apple-Grade A+ Enhanced Brand Content (EBC)
-        aplus = dict(draft.get("aplus_content") or {})
-        if not aplus.get("headline"):
-            aplus["headline"] = f"{p_name}. Engineered with Passion by {brand}."
-
-        if not aplus.get("brand_story"):
-            aplus["brand_story"] = (
-                f"At {brand}, we design every product with obsessive attention to detail. Built from authentic materials "
-                f"with rigorous quality standards, the {p_name} elevates your everyday experience with enduring elegance, "
-                f"artisanal refinement, and effortless reliability."
-            )
-
-        if not aplus.get("feature_cards") or len(aplus.get("feature_cards", [])) < 3:
-            aplus["feature_cards"] = [
-                {
-                    "title": "Signature Craftsmanship",
-                    "subtitle": "Obsessive attention to every detail",
-                    "description": f"Engineered using verified {main_spec} to deliver remarkable tactile refinement, durability, and all-season aesthetic beauty."
-                },
-                {
-                    "title": "Ergonomic Architecture",
-                    "subtitle": "Precision fit for everyday life",
-                    "description": f"Tailored dimensions ({size_spec}) deliver intuitive handling, optimum airflow and utility, seamlessly integrating into your space."
-                },
-                {
-                    "title": "Enduring Resilience",
-                    "subtitle": "Rigorously tested quality",
-                    "description": f"Tested to withstand intense daily use, maintaining its pristine {color_spec} finish and structural integrity over time."
-                }
-            ]
-
-        if not aplus.get("comparison_table") or not aplus["comparison_table"].get("rows"):
-            aplus["comparison_table"] = {
-                "headers": ["Specification / Feature", f"{p_name} (This Model)", "Standard Market Alternative", f"{brand} Heritage / Pro Model"],
-                "rows": [
-                    {
-                        "feature": "Core Material / Build",
-                        "this_model": str(main_spec),
-                        "standard": "Basic Synthetic / Blended",
-                        "pro": f"Reserve Organic / Aerospace Grade"
-                    },
-                    {
-                        "feature": "Dimensional Precision",
-                        "this_model": str(size_spec),
-                        "standard": "Standard Commercial Fit",
-                        "pro": "Custom Hand-Tailored Finish"
-                    },
-                    {
-                        "feature": "Durability & Wear Cycles",
-                        "this_model": "Exceeds 100+ Cycles (Heavy Duty)",
-                        "standard": "25-30 Standard Cycles",
-                        "pro": "Generational Heritage Rating"
-                    },
-                    {
-                        "feature": "Package Contents",
-                        "this_model": str(included_spec),
-                        "standard": "Single Unit Only",
-                        "pro": "Luxury Boxed Presentation + Extras"
-                    },
-                    {
-                        "feature": "Warranty & Support",
-                        "this_model": str(warranty_spec),
-                        "standard": "Limited 30-Day Support",
-                        "pro": "Dedicated Priority Brand Concierge"
-                    }
-                ]
-            }
-
-        draft["aplus_content"] = aplus
+        draft["aplus_content"] = dict(draft.get("aplus_content") or {})
         return draft
 
     @classmethod
@@ -517,14 +426,43 @@ Meesho rules:
             clean = json_match.group(1)
 
         try:
-            parsed = json.loads(clean)
-            if len(parsed.get("title", "")) > 200:
+            parsed = cls._normalize_listing(json.loads(clean))
+            if len(parsed["title"]) > 200:
                 parsed["title"] = parsed["title"][:197] + "..."
             return cls._enrich_with_apple_grade_specs_and_aplus(product, product.brand or settings.DEFAULT_BRAND, parsed)
         except Exception:
             if not fallback_on_error:
                 return None
             return cls._fallback_generator(product, product.brand or settings.DEFAULT_BRAND, marketplace=marketplace)
+
+    @classmethod
+    def _normalize_listing(cls, parsed: Any) -> Dict[str, Any]:
+        """
+        Gives model output the shape the draft code reads: missing keywords or specs become empty
+        instead of failing with a KeyError, and a list sent as one string is split. Raises ValueError
+        (so the next model is tried) when it isn't a usable listing: no title, description or bullets,
+        or more than 10 bullets (models sometimes write the description into the bullet list).
+        """
+        if not isinstance(parsed, dict):
+            raise ValueError("model output is not a JSON object")
+
+        def as_list(value: Any, sep: str) -> List[str]:
+            if isinstance(value, str):
+                value = re.split(sep, value)
+            if not isinstance(value, list):
+                return []
+            return [str(v).strip() for v in value if v is not None and str(v).strip()]
+
+        parsed["title"] = str(parsed.get("title") or "").strip()
+        parsed["bullets"] = as_list(parsed.get("bullets"), r"\n+")
+        parsed["description"] = str(parsed.get("description") or "").strip()
+        parsed["keywords"] = as_list(parsed.get("keywords"), r"[,\n]+")
+        for key in ("technical_specs", "aplus_content"):
+            if not isinstance(parsed.get(key), dict):
+                parsed[key] = {}
+        if not parsed["title"] or not parsed["description"] or not 1 <= len(parsed["bullets"]) <= 10:
+            raise ValueError("model output is missing the title, description or bullets")
+        return parsed
 
     @classmethod
     def _fallback_generator(cls, product: Product, brand: str, marketplace: str = "amazon") -> Dict[str, Any]:

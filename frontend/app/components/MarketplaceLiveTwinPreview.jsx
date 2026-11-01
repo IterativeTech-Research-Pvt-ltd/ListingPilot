@@ -2,6 +2,8 @@
 
 import React, { useState, useMemo } from "react";
 
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000/api/v1";
+
 export default function MarketplaceLiveTwinPreview({
   draft,
   product,
@@ -12,6 +14,10 @@ export default function MarketplaceLiveTwinPreview({
   technicalSpecs = {},
   aplusContent = {},
   brandVoice = {},
+  // Payloads built by the backend from the saved draft (GET /drafts/{id}/amazon-payload, /aplus-payload)
+  apiPayload = null,
+  apiAplusPayload = null,
+  onPublished = null,
   onClose = null,
   isModal = false
 }) {
@@ -23,156 +29,25 @@ export default function MarketplaceLiveTwinPreview({
   const [publishStatus, setPublishStatus] = useState(null);
   const [isPublishing, setIsPublishing] = useState(false);
 
-  const brand = product?.brand || brandVoice?.brand_name || "Official Brand";
+  const brand = product?.brand || brandVoice?.brand_name || "";
   const pName = product?.name || "Product";
   const category = product?.category || "General";
-  const price = Number(product?.price || 1499);
-  const mrp = Number(product?.mrp || Math.round(price * 1.35));
-  const discountPercent = mrp > price ? Math.round(((mrp - price) / mrp) * 100) : 15;
-  const stock = product?.stock ?? 45;
+  // Only the product's own data is shown; missing values stay missing
+  const price = Number(product?.price ?? 0);
+  const mrp = product?.mrp ? Number(product.mrp) : null;
+  const discountPercent = mrp && mrp > price ? Math.round(((mrp - price) / mrp) * 100) : 0;
+  const stock = product?.stock ?? 0;
+  const attrLookup = useMemo(() => {
+    const m = {};
+    Object.entries(product?.attributes || {}).forEach(([k, v]) => { if (v) m[k.trim().toLowerCase()] = v; });
+    return m;
+  }, [product]);
+  const productAttr = (...names) => names.map(n => attrLookup[n]).find(Boolean);
 
-  const images = (product?.images && product.images.length > 0)
-    ? product.images
-    : [
-        "https://images.unsplash.com/photo-1522771739844-6a9f6d5f14af?auto=format&fit=crop&w=800&q=80",
-        "https://images.unsplash.com/photo-1584100936595-c0654b55a2e2?auto=format&fit=crop&w=800&q=80",
-        "https://images.unsplash.com/photo-1616486338812-3dadae4b4ace?auto=format&fit=crop&w=800&q=80"
-      ];
+  const images = Array.isArray(product?.images) ? product.images : [];
 
   const currentImage = images[activeImageIdx] || images[0];
 
-  // ── Dynamic Category Spec Inferrer ──────────────────────────────────────────
-  const getCategoryDefaults = (cat, name) => {
-    const text = `${cat || ""} ${name || ""}`.toLowerCase();
-    if (text.includes("phone") || text.includes("mobile") || text.includes("iphone")) {
-      return {
-        "Display": "6.1 Inches Super Retina XDR OLED",
-        "Storage Capacity": "128 GB",
-        "RAM": "8 GB High Speed",
-        "Operating System": "iOS 18 / Android 14",
-        "Processor": "Next-Gen 6-Core Flagship Processor",
-        "Camera Specs": "48MP Fusion + 12MP Ultra Wide with OIS",
-        "Battery Life": "Up to 22 Hours Video Playback",
-        "Connector Type": "USB-C",
-        "Item Dimensions": "14.76 x 7.16 x 0.78 cm",
-        "Item Weight": "170 g",
-        "In The Box": "Smartphone, USB-C Charge Cable, SIM Ejector, Documentation",
-        "Warranty": "1 Year Manufacturer Limited Warranty",
-        "Country of Origin": "India"
-      };
-    }
-    if (text.includes("laptop") || text.includes("computer") || text.includes("notebook") || text.includes("macbook")) {
-      return {
-        "Screen Size": "15.6 Inches Full HD IPS (1920x1080)",
-        "Hard Disk Size": "512 GB PCIe NVMe M.2 SSD",
-        "CPU Model": "Intel Core i5 / Apple Silicon",
-        "RAM Memory": "16 GB High-Speed DDR5",
-        "Operating System": "Windows 11 / macOS",
-        "Graphics Card": "Integrated High Performance Graphics",
-        "Item Dimensions": "35.8 x 24.2 x 1.79 cm",
-        "Item Weight": "1.45 kg",
-        "In The Box": "Laptop, Power Adapter, User Manual",
-        "Warranty": "1 Year On-site Manufacturer Warranty",
-        "Country of Origin": "India"
-      };
-    }
-    if (text.includes("headphone") || text.includes("earbud") || text.includes("earphone") || text.includes("audio")) {
-      return {
-        "Headphones Form Factor": "True Wireless In-Ear / Ergonomic",
-        "Connectivity Technology": "Bluetooth 5.3 Low Latency",
-        "Noise Control": "Active Noise Cancellation (ANC)",
-        "Battery Life": "Up to 30 Hours with Charging Case",
-        "Driver Size": "11mm High-Excursion Custom Driver",
-        "Water Resistance": "IPX4 Sweat and Splash Proof",
-        "In The Box": "Earbuds, MagSafe Charging Case, Silicone Ear Tips, USB-C Cable",
-        "Warranty": "1 Year Manufacturer Assurance",
-        "Country of Origin": "India"
-      };
-    }
-    if (text.includes("shoe") || text.includes("sneaker") || text.includes("footwear") || text.includes("boot")) {
-      return {
-        "Outer Material": "Breathable Engineered Jacquard Mesh",
-        "Sole Material": "Shock-Absorbing Responsive EVA & Rubber",
-        "Closure Type": "Ergonomic Lace-Up",
-        "Heel Type": "Flat Cushioned Arch Support (Drop: 8mm)",
-        "Water Resistance": "Water-Repellent Coating",
-        "Occasion": "Daily Wear / Active Running / Gym",
-        "Care Instructions": "Wipe clean with soft damp cloth",
-        "Warranty": "30 Days Quality Guarantee",
-        "Country of Origin": "India"
-      };
-    }
-    if (text.includes("shirt") || text.includes("apparel") || text.includes("clothing") || text.includes("tshirt") || text.includes("kurta")) {
-      return {
-        "Material Composition": "100% Breathable Combed Cotton / Linen",
-        "Fit Type": "Regular Tailored Fit",
-        "Collar Style": "Spread Collar / Mandarin Band",
-        "Sleeve Type": "Full Sleeve with Button Cuffs",
-        "Pattern": "Solid Classic Weave",
-        "Care Instructions": "Machine wash cold with like colors",
-        "Occasion": "Casual, Everyday, Semi-Formal",
-        "Country of Origin": "India"
-      };
-    }
-    if (text.includes("cookware") || text.includes("pan") || text.includes("kadhai") || text.includes("pot") || text.includes("cooker")) {
-      return {
-        "Material": "Food-Grade Tri-Ply Stainless Steel",
-        "Capacity": "3.5 Liters Heavy Bottom",
-        "Compatible Stovetops": "Gas, Induction, Ceramic, Halogen",
-        "Coating / Finish": "Toxin-Free Mirror Polish Interior (Nickel-Safe)",
-        "Handle Material": "Stay-Cool Cast Stainless Steel Riveted Handle",
-        "Dishwasher Safe": "Yes, Completely Dishwasher Safe",
-        "Warranty": "5 Year Manufacturer Warranty",
-        "Country of Origin": "India"
-      };
-    }
-    if (text.includes("serum") || text.includes("cream") || text.includes("skincare") || text.includes("beauty") || text.includes("moisturizer")) {
-      return {
-        "Skin Type": "All Skin Types (Dermatologically Tested)",
-        "Item Form": "Lightweight Fast-Absorbing Liquid Serum",
-        "Active Ingredients": "10% Niacinamide, 2% Hyaluronic Acid",
-        "Net Quantity": "30 Milliliters",
-        "Product Benefits": "Deep Hydration, Barrier Repair, Radiance",
-        "Special Ingredients": "Paraben-Free, Sulphate-Free, 100% Vegan",
-        "Country of Origin": "India"
-      };
-    }
-    if (text.includes("grocery") || text.includes("tea") || text.includes("coffee") || text.includes("oil") || text.includes("food") || text.includes("spice")) {
-      return {
-        "Diet Type": "Vegetarian / 100% Vegan / Gluten Free",
-        "Net Quantity": "500 Grams",
-        "Form / State": "Whole / Pure Cold-Pressed Liquid",
-        "Ingredients": "100% Single-Origin Pure Natural Ingredients",
-        "Shelf Life": "12 Months from Manufacturing Date",
-        "Certifications": "FSSAI Certified, USDA Organic, Non-GMO",
-        "Country of Origin": "India"
-      };
-    }
-    if (text.includes("bedsheet") || text.includes("bedding") || text.includes("linen")) {
-      return {
-        "Material": "100% Pure Long-Staple Combed Cotton",
-        "Thread Count": "210 TC (Crisp, Breathable & Ultra-Soft)",
-        "Size": "King (108 x 108 inches / 274 x 274 cm)",
-        "Weave Type": "Percale Soft Touch",
-        "Pattern": "Heritage Hand-Block Inspired Print",
-        "Included Components": "1 King Bedsheet + 2 Matching Pillow Covers (18 x 28 in)",
-        "Care Instructions": "Machine wash cold gentle cycle, tumble dry low",
-        "Item Weight": "950 g",
-        "Warranty": "1 Year Quality Assurance against fading",
-        "Country of Origin": "India"
-      };
-    }
-    return {
-      "Material / Build Quality": "High Durability Certified Material",
-      "Item Dimensions": "Standard Ergonomic Dimensions",
-      "Item Weight": "Standard Catalog Weight",
-      "Color / Finish": "Signature Finish",
-      "In The Box": "1 Main Unit + User Documentation",
-      "Care Instructions": "Handle in accordance with user guidelines",
-      "Warranty": "1 Year Manufacturer Assurance",
-      "Country of Origin": "India"
-    };
-  };
 
   // Clean specs
   const specs = useMemo(() => {
@@ -182,151 +57,38 @@ export default function MarketplaceLiveTwinPreview({
     if (product?.attributes && Object.keys(product.attributes).length > 0) {
       return product.attributes;
     }
-    return getCategoryDefaults(category, pName);
-  }, [technicalSpecs, product, category, pName]);
+    return {};
+  }, [technicalSpecs, product]);
 
-  const activeBullets = useMemo(() => {
-    if (bullets && bullets.length > 0) return bullets;
-    return [
-      `PREMIUM BUILD & CRAFTSMANSHIP — Engineered with verified quality materials for reliable everyday use.`,
-      `PRECISION ERGONOMICS & SIZING — Optimized dimensions tailored for intuitive comfort, utility, and seamless fit.`,
-      `HIGH DURABILITY TESTED — Rigorously evaluated to exceed standard longevity and daily wear performance.`,
-      `COMPREHENSIVE PACKAGE — Includes official accessories and user documentation in luxury packaging.`,
-      `OFFICIAL BRAND ASSURANCE — Backed by ${brand} manufacturer warranty and priority customer service.`
-    ];
-  }, [bullets, brand]);
+  const activeBullets = bullets || [];
 
   const aplus = aplusContent || {};
-  const featureCards = aplus.feature_cards || [
-    {
-      title: "Signature Craftsmanship",
-      subtitle: "Obsessive attention to detail",
-      description: "Engineered using verified materials to deliver remarkable tactile refinement, durability, and all-season aesthetic beauty."
-    },
-    {
-      title: "Ergonomic Architecture",
-      subtitle: "Precision fit for everyday life",
-      description: "Tailored dimensions deliver intuitive handling, optimum airflow, and effortless integration into your routine."
-    },
-    {
-      title: "Enduring Resilience",
-      subtitle: "Rigorously tested quality",
-      description: "Tested to withstand intense daily use, maintaining its pristine finish and structural integrity over time."
-    }
-  ];
+  const featureCards = aplus.feature_cards || [];
 
-  const comparisonTable = aplus.comparison_table || {
-    headers: ["Specification / Metric", `${pName} (This Model)`, "Standard Market Alternative", `${brand} Luxury Heritage Edition`],
-    rows: [
-      { feature: "Core Material / Build", this_model: specs["Material / Build Quality"] || specs["Material"] || specs["Fabric"] || "Verified Grade", standard: "Basic Synthetic / Blended", pro: "Reserve Organic / Aerospace Grade" },
-      { feature: "Dimensional Precision", this_model: specs["Item Dimensions"] || specs["Dimensions"] || specs["Size"] || "Standard Precision Fit", standard: "Standard Commercial Fit", pro: "Custom Hand-Tailored Finish" },
-      { feature: "Durability & Wear", this_model: "Exceeds 100+ Cycles (Heavy Duty)", standard: "25-30 Standard Cycles", pro: "Generational Heritage Rating" },
-      { feature: "In The Box", this_model: specs["In The Box"] || specs["Included Components"] || "Complete Set", standard: "Single Unit Only", pro: "Luxury Boxed Presentation + Extras" },
-      { feature: "Warranty & Support", this_model: specs["Warranty"] || "1 Year Manufacturer Assurance", standard: "Limited 30-Day Support", pro: "Dedicated Priority Brand Concierge" }
-    ]
-  };
+  const comparisonTable = aplus.comparison_table || { headers: [], rows: [] };
 
-  // ── Construct Synchronized Amazon SP-API Listings Items Payload (2021-08-01) ───
-  const spApiPayload = useMemo(() => {
-    const mpId = "A21TJRUUN4KGV";
-    const pType = (category || "PRODUCT").toUpperCase().replace(/[^A-Z0-9]/g, "_");
-    
-    const attrs = {
-      item_name: [{ value: title || pName, marketplace_id: mpId }],
-      bullet_point: activeBullets.map(b => ({ value: b, marketplace_id: mpId })),
-      product_description: [{ value: description || `${pName} manufactured by ${brand}.`, marketplace_id: mpId }],
-      generic_keyword: (draft?.keywords || [`${brand.toLowerCase()} ${category.toLowerCase()}`, "high quality", "verified specs"]).map(k => ({ value: k, marketplace_id: mpId })),
-      brand: [{ value: brand, marketplace_id: mpId }],
-      country_of_origin: [{ value: specs["Country of Origin"]?.toLowerCase().includes("india") ? "IN" : "IN", marketplace_id: mpId }],
-      manufacturer: [{ value: specs["Manufacturer"] || `${brand} Creations Private Limited`, marketplace_id: mpId }],
-      packer: [{ value: specs["Packer"] || `${brand} Central Fulfillment Hub, Jaipur, RJ - 302029`, marketplace_id: mpId }],
-      net_quantity: [{ value: 1, unit: "count", marketplace_id: mpId }],
-      generic_name: [{ value: specs["Generic Name"] || category, marketplace_id: mpId }],
-      maximum_retail_price: [{ value_with_tax: mrp, currency: "INR", marketplace_id: mpId }],
-      purchasable_offer: [{
-        currency: "INR",
-        our_price: [{ schedule: [{ value_with_tax: price }] }],
-        marketplace_id: mpId
-      }],
-      fulfillment_availability: [{ quantity: stock, fulfillment_channel_code: "DEFAULT" }]
-    };
-
-    // Merge all technical specs dynamically
-    Object.entries(specs).forEach(([k, v]) => {
-      const cleanKey = k.toLowerCase().replace(/[^a-z0-9]/g, "_");
-      if (!attrs[cleanKey] && v) {
-        attrs[cleanKey] = [{ value: String(v), marketplace_id: mpId }];
-      }
-    });
-
-    return {
-      productType: pType,
-      requirements: "LISTING",
-      attributes: attrs
-    };
-  }, [category, title, pName, activeBullets, description, draft, brand, specs, mrp, price, stock]);
-
-  // ── Construct Synchronized Amazon A+ Content (2020-11-01) ─────────────────────
-  const aplusPayload = useMemo(() => {
-    return {
-      contentType: "EBC",
-      contentName: `A+ Content - ${pName} (${brand})`,
-      contentSubtype: "STANDARD",
-      marketplaceId: "A21TJRUUN4KGV",
-      contentDocument: {
-        name: `A+ Enhanced Experience - ${pName}`,
-        contentType: "EBC",
-        contentSubtype: "STANDARD",
-        modules: [
-          {
-            contentModuleType: "STANDARD_HEADER_IMAGE_TEXT",
-            standardHeaderImageText: {
-              headline: { value: aplus.headline || `${pName}. Engineered with Passion by ${brand}.` },
-              bodyText: { textList: [{ value: aplus.brand_story || description || "World-class craftsmanship." }] }
-            }
-          },
-          {
-            contentModuleType: "STANDARD_THREE_IMAGE_TEXT",
-            standardThreeImageText: {
-              headline: { value: "Engineering & Craftsmanship Highlights" },
-              block1: { headline: { value: featureCards[0]?.title || "Signature Craftsmanship" }, bodyText: { value: featureCards[0]?.description || "" } },
-              block2: { headline: { value: featureCards[1]?.title || "Ergonomic Architecture" }, bodyText: { value: featureCards[1]?.description || "" } },
-              block3: { headline: { value: featureCards[2]?.title || "Enduring Resilience" }, bodyText: { value: featureCards[2]?.description || "" } }
-            }
-          },
-          {
-            contentModuleType: "STANDARD_COMPARISON_TABLE",
-            standardComparisonTable: {
-              productColumns: [
-                { columnNumber: 1, title: { value: `${pName} (This Model)` }, asin: "SELF" },
-                { columnNumber: 2, title: { value: "Market Alternative" }, asin: "COMPARE-001" },
-                { columnNumber: 3, title: { value: "Pro Heritage Edition" }, asin: "COMPARE-002" }
-              ],
-              metricRows: comparisonTable.rows.map((row, idx) => ({
-                rowNumber: idx + 1,
-                label: { value: row.feature },
-                values: [
-                  { value: String(row.this_model) },
-                  { value: String(row.standard) },
-                  { value: String(row.pro) }
-                ]
-              }))
-            }
-          }
-        ]
-      }
-    };
-  }, [pName, brand, aplus, description, featureCards, comparisonTable]);
+  // The JSON views show what the backend would send, never a copy assembled (and filled in) here
+  const spApiPayload = apiPayload?.payload || null;
+  const aplusPayload = apiAplusPayload?.payload || null;
 
   // ── Amazon Marketplace Standards Compliance Audit ────────────────────────────
   const complianceAudit = useMemo(() => {
     const titleLen = (title || pName).length;
     const bulletsCount = activeBullets.length;
-    const keywordsBytes = (draft?.keywords || []).join(" ").length;
-    const hasLegalMetrology = Boolean(specs["Country of Origin"]);
+    // Amazon counts search terms in UTF-8 bytes
+    const keywordsBytes = new TextEncoder().encode((draft?.keywords || []).join(" ")).length;
+    const legalFields = {
+      "Country of Origin": productAttr("country of origin"),
+      "Manufacturer": productAttr("manufacturer name", "manufacturer"),
+      "Packer": productAttr("packer name", "packer"),
+      "Net Quantity": productAttr("net quantity (n)", "net quantity"),
+      "MRP": mrp
+    };
+    const missingLegal = Object.keys(legalFields).filter(k => !legalFields[k]);
+    const hasLegalMetrology = missingLegal.length === 0;
     const hasTechnicalSpecs = Object.keys(specs).length >= 5;
     const hasAplus = Boolean(aplus.headline || featureCards.length >= 3);
-    const hasPriceAndMrp = price > 0 && mrp >= price;
+    const hasPriceAndMrp = price > 0 && Boolean(mrp) && mrp >= price;
 
     const checks = [
       {
@@ -363,19 +125,19 @@ export default function MarketplaceLiveTwinPreview({
         name: "India Legal Metrology (Mandatory)",
         desc: "Country of Origin, Manufacturer, Packer, Net Qty & MRP",
         status: hasLegalMetrology,
-        value: "Verified Compliant"
+        value: hasLegalMetrology ? "All present in product data" : `Missing: ${missingLegal.join(", ")}`
       },
       {
         name: "A+ Enhanced Brand Content (EBC)",
         desc: "Hero story banner, 3 spotlight cards & comparison matrix",
         status: hasAplus,
-        value: "Apple-Grade Matrix Active"
+        value: hasAplus ? `${featureCards.length} feature card(s)` : "Not written"
       },
       {
         name: "Pricing & Buy Box Readiness",
         desc: "Tax-inclusive INR price, MRP with discount, stock available",
         status: hasPriceAndMrp,
-        value: `₹${price} (MRP: ₹${mrp}, ${discountPercent}% off)`
+        value: mrp ? `₹${price} (MRP: ₹${mrp}, ${discountPercent}% off)` : `₹${price} (no MRP in catalogue)`
       }
     ];
 
@@ -383,7 +145,7 @@ export default function MarketplaceLiveTwinPreview({
     const score = Math.round((passed / checks.length) * 100);
 
     return { checks, score, passed, total: checks.length };
-  }, [title, pName, activeBullets, description, draft, specs, aplus, featureCards, price, mrp, discountPercent]);
+  }, [title, pName, activeBullets, description, draft, specs, aplus, featureCards, price, mrp, discountPercent, attrLookup]);
 
   const copyToClipboard = (text, label) => {
     navigator.clipboard.writeText(text);
@@ -391,22 +153,31 @@ export default function MarketplaceLiveTwinPreview({
     setTimeout(() => setCopyStatus(""), 2500);
   };
 
+  const publishTarget = draft?.marketplace === "flipkart" ? "Flipkart" : "Amazon";
+
   const handleLivePublish = async () => {
     if (!draft?.id) {
-      alert("Please save or approve the draft first before pushing to Amazon SP-API.");
+      setPublishStatus({ success: false, message: "Save or approve the draft first; nothing was published." });
       return;
     }
     setIsPublishing(true);
     try {
-      const res = await fetch(`/api/v1/drafts/${draft.id}/publish`, { method: "POST" });
-      const data = await res.json();
-      if (res.ok) {
-        setPublishStatus({ success: true, message: `Successfully synchronized to Amazon SP-API! ASIN: ${data.publish_result?.external_listing_id || "B0DGJ8YZDF"}` });
+      const res = await fetch(`${API_BASE}/drafts/${draft.id}/publish`, { method: "POST" });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        const detail = data && data.detail;
+        setPublishStatus({ success: false, message: typeof detail === "string" ? detail : `Publish failed (HTTP ${res.status}); nothing was published.` });
+        return;
+      }
+      const published = data.draft;
+      if (onPublished && published) onPublished(published);
+      if (published?.status === "live") {
+        setPublishStatus({ success: true, message: published.external_listing_id ? `${publishTarget} accepted the listing. Listing ID: ${published.external_listing_id}` : `${publishTarget} accepted the listing; no listing ID returned yet.` });
       } else {
-        setPublishStatus({ success: false, message: data.detail || "Publishing error" });
+        setPublishStatus({ success: false, message: `${publishTarget} rejected the listing: ${published?.rejection_reason || "no reason given"}` });
       }
     } catch (e) {
-      setPublishStatus({ success: false, message: e.message });
+      setPublishStatus({ success: false, message: `Couldn't reach the server; nothing was published. ${e.message}` });
     } finally {
       setIsPublishing(false);
     }
@@ -557,7 +328,7 @@ export default function MarketplaceLiveTwinPreview({
             </div>
           )}
 
-          {draft?.id && (
+          {draft?.id && draft.marketplace !== "meesho" && (
             <button
               type="button"
               onClick={handleLivePublish}
@@ -573,7 +344,7 @@ export default function MarketplaceLiveTwinPreview({
                 cursor: isPublishing ? "wait" : "pointer"
               }}
             >
-              {isPublishing ? "⏳ Syncing..." : "⚡ Push to SP-API"}
+              {isPublishing ? "⏳ Publishing..." : `⚡ Publish to ${publishTarget}`}
             </button>
           )}
 
@@ -622,7 +393,7 @@ export default function MarketplaceLiveTwinPreview({
                 PUT /listings/2021-08-01/items/{product?.sku || "SKU-UNKNOWN"}
               </span>
               <p style={{ margin: "2px 0 0 0", fontSize: "0.76rem", color: "#888" }}>
-                This is the exact, canonical JSON document sent to Amazon Selling Partner API. Fully in sync with your live edits.
+                Built by the backend from the last saved draft and the product's data. Save your edits to update it.
               </p>
             </div>
             <div style={{ display: "flex", gap: "8px" }}>
@@ -655,7 +426,7 @@ export default function MarketplaceLiveTwinPreview({
             border: "1px solid #333",
             color: "#a6e22e"
           }}>
-            {JSON.stringify(spApiPayload, null, 2)}
+            {spApiPayload ? JSON.stringify(spApiPayload, null, 2) : "Not loaded: generate and save an Amazon draft to see the payload the backend builds."}
           </pre>
         </div>
       )}
@@ -702,7 +473,7 @@ export default function MarketplaceLiveTwinPreview({
             border: "1px solid #333",
             color: "#66d9ef"
           }}>
-            {JSON.stringify(aplusPayload, null, 2)}
+            {aplusPayload ? JSON.stringify(aplusPayload, null, 2) : "Not loaded: generate and save an Amazon draft to see the A+ document the backend builds."}
           </pre>
         </div>
       )}
@@ -836,11 +607,6 @@ export default function MarketplaceLiveTwinPreview({
                   <span style={{ fontSize: "0.8rem", color: "#febd69" }}>.in</span>
                 </div>
 
-                <div style={{ fontSize: "0.72rem", color: "#ccc", display: "flex", flexDirection: "column", minWidth: "120px" }}>
-                  <span>Delivering to Jaipur 302005</span>
-                  <b style={{ color: "#ffffff" }}>Update location</b>
-                </div>
-
                 {/* Search Bar */}
                 <div style={{ flex: 1, display: "flex", minWidth: "220px", height: "36px" }}>
                   <div style={{ background: "#e6e6e6", color: "#333", fontSize: "0.72rem", padding: "0 10px", display: "flex", alignItems: "center", borderTopLeftRadius: "4px", borderBottomLeftRadius: "4px", borderRight: "1px solid #ccc" }}>
@@ -928,26 +694,19 @@ export default function MarketplaceLiveTwinPreview({
                     color: "#0f1111",
                     margin: "0 0 8px 0"
                   }}>
-                    {title || `${brand} ${pName} - Certified Premium Collection`}
+                    {title || `${brand} ${pName}`}
                   </h1>
-
-                  {/* Ratings */}
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.8rem", marginBottom: "10px" }}>
-                    <span style={{ color: "#e77600" }}>★★★★☆</span>
-                    <span style={{ color: "#007185" }}>4.5 out of 5</span>
-                    <span style={{ color: "#565959" }}>| 1,248 ratings</span>
-                  </div>
 
                   <hr style={{ border: "none", borderTop: "1px solid #e7e7e7", margin: "10px 0" }} />
 
                   {/* Price Block */}
                   <div style={{ marginBottom: "12px" }}>
                     <div style={{ display: "flex", alignItems: "baseline", gap: "8px" }}>
-                      <span style={{ color: "#CC0C39", fontSize: "1.4rem", fontWeight: 300 }}>-{discountPercent}%</span>
+                      {discountPercent > 0 && <span style={{ color: "#CC0C39", fontSize: "1.4rem", fontWeight: 300 }}>-{discountPercent}%</span>}
                       <span style={{ fontSize: "1.5rem", fontWeight: 700, color: "#0f1111" }}>₹{price.toLocaleString("en-IN")}</span>
                     </div>
                     <div style={{ fontSize: "0.75rem", color: "#565959" }}>
-                      M.R.P.: <span style={{ textDecoration: "line-through" }}>₹{mrp.toLocaleString("en-IN")}</span>
+                      {mrp ? <>M.R.P.: <span style={{ textDecoration: "line-through" }}>₹{mrp.toLocaleString("en-IN")}</span></> : "M.R.P.: not in catalogue"}
                     </div>
                     <div style={{ fontSize: "0.72rem", color: "#565959", marginTop: "2px" }}>
                       Inclusive of all taxes
@@ -988,7 +747,7 @@ export default function MarketplaceLiveTwinPreview({
                       <tbody>
                         <tr style={{ borderBottom: "1px solid #eee" }}>
                           <td style={{ padding: "4px 8px", fontWeight: 600, color: "#565959", width: "35%" }}>Country of Origin</td>
-                          <td style={{ padding: "4px 8px" }}>{specs["Country of Origin"] || "India"}</td>
+                          <td style={{ padding: "4px 8px" }}>{specs["Country of Origin"] || "—"}</td>
                         </tr>
                         <tr style={{ borderBottom: "1px solid #eee" }}>
                           <td style={{ padding: "4px 8px", fontWeight: 600, color: "#565959" }}>Manufacturer</td>
@@ -1019,10 +778,10 @@ export default function MarketplaceLiveTwinPreview({
                     {/* Hero Headline & Story */}
                     <div style={{ background: "linear-gradient(135deg, #131921 0%, #232f3e 100%)", color: "#ffffff", padding: "20px", borderRadius: "6px", marginBottom: "14px" }}>
                       <h2 style={{ fontSize: "1.2rem", fontWeight: 700, margin: "0 0 8px 0", color: "#febd69" }}>
-                        {aplus.headline || `${pName}. Engineered with Passion by ${brand}.`}
+                        {aplus.headline || "No A+ headline written"}
                       </h2>
                       <p style={{ fontSize: "0.82rem", lineHeight: "1.5", margin: 0, color: "#e7e7e7" }}>
-                        {aplus.brand_story || description || "Every product is designed with obsessive attention to detail and enduring elegance."}
+                        {aplus.brand_story || description || ""}
                       </p>
                     </div>
 
@@ -1088,21 +847,8 @@ export default function MarketplaceLiveTwinPreview({
                     ₹{price.toLocaleString("en-IN")}
                   </div>
 
-                  <div style={{ fontSize: "0.78rem", color: "#007185", margin: "6px 0" }}>
-                    FREE delivery <b>Tomorrow, by 8 PM</b>
-                  </div>
-
-                  <div style={{ fontSize: "0.75rem", color: "#565959", margin: "4px 0" }}>
-                    Delivering to Jaipur 302005 - <b>Update location</b>
-                  </div>
-
-                  <div style={{ fontSize: "0.9rem", color: "#007600", fontWeight: 700, margin: "10px 0" }}>
-                    In stock
-                  </div>
-
-                  <div style={{ fontSize: "0.75rem", color: "#565959", marginBottom: "10px" }}>
-                    Ships from: <b>Amazon</b><br />
-                    Sold by: <b>{brand} Retail</b>
+                  <div style={{ fontSize: "0.9rem", color: stock > 0 ? "#007600" : "#B12704", fontWeight: 700, margin: "10px 0" }}>
+                    {stock > 0 ? `In stock (${stock})` : "Currently unavailable (stock 0)"}
                   </div>
 
                   {/* Add to Cart Button */}
@@ -1171,16 +917,10 @@ export default function MarketplaceLiveTwinPreview({
                   <h1 style={{ fontSize: "1.1rem", fontWeight: 500, color: "#212121", margin: "0 0 8px 0" }}>
                     {title || `${brand} ${pName}`}
                   </h1>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
-                    <span style={{ background: "#388e3c", color: "#fff", padding: "2px 6px", borderRadius: "3px", fontSize: "0.72rem", fontWeight: 700 }}>4.4 ★</span>
-                    <span style={{ color: "#878787", fontSize: "0.75rem" }}>1,840 Ratings & 210 Reviews</span>
-                    <span style={{ color: "#2874f0", fontWeight: 700, fontSize: "0.75rem" }}>FAssured</span>
-                  </div>
-
                   <div style={{ display: "flex", alignItems: "baseline", gap: "10px", margin: "12px 0" }}>
                     <span style={{ fontSize: "1.6rem", fontWeight: 700, color: "#212121" }}>₹{price.toLocaleString("en-IN")}</span>
-                    <span style={{ textDecoration: "line-through", color: "#878787", fontSize: "0.85rem" }}>₹{mrp.toLocaleString("en-IN")}</span>
-                    <span style={{ color: "#388e3c", fontWeight: 700, fontSize: "0.85rem" }}>{discountPercent}% off</span>
+                    {mrp && <span style={{ textDecoration: "line-through", color: "#878787", fontSize: "0.85rem" }}>₹{mrp.toLocaleString("en-IN")}</span>}
+                    {discountPercent > 0 && <span style={{ color: "#388e3c", fontWeight: 700, fontSize: "0.85rem" }}>{discountPercent}% off</span>}
                   </div>
 
                   <div style={{ marginTop: "16px" }}>
@@ -1230,13 +970,9 @@ export default function MarketplaceLiveTwinPreview({
                   <div style={{ fontSize: "1.5rem", fontWeight: 700, color: "#212121", marginBottom: "6px" }}>
                     ₹{price.toLocaleString("en-IN")}
                   </div>
-                  <div style={{ background: "#e7f7ed", color: "#038d63", padding: "4px 8px", borderRadius: "4px", display: "inline-block", fontSize: "0.75rem", fontWeight: 600, marginBottom: "12px" }}>
-                    Free Delivery · Lowest Price Guaranteed
-                  </div>
-
                   <div style={{ borderTop: "1px solid #f0f0f0", paddingTop: "12px" }}>
                     <h3 style={{ fontSize: "0.85rem", fontWeight: 700, marginBottom: "6px" }}>Product Details</h3>
-                    <p style={{ fontSize: "0.78rem", color: "#666", lineHeight: "1.5" }}>{description || "High quality merchandise cataloged for direct supplier fulfillment."}</p>
+                    <p style={{ fontSize: "0.78rem", color: "#666", lineHeight: "1.5" }}>{description || ""}</p>
                     <table style={{ width: "100%", fontSize: "0.76rem", borderCollapse: "collapse", marginTop: "8px" }}>
                       <tbody>
                         {Object.entries(specs).slice(0, 6).map(([k, v]) => (

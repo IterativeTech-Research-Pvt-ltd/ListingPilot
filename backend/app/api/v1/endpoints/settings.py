@@ -1,6 +1,8 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
+from sqlalchemy.orm import Session
+from app.core.database import get_db
 from app.services.settings_service import SettingsService
 
 router = APIRouter()
@@ -88,7 +90,7 @@ def update_credentials(payload: CredentialsUpdate):
 
 
 @router.get("/system-health", response_model=Dict[str, Any])
-def get_system_health():
+def get_system_health(db: Session = Depends(get_db)):
     """Returns comprehensive system health, sync heartbeats, and active alerts (ADM-4)."""
-    return SettingsService.get_system_health()
+    return SettingsService.get_system_health(db)
 

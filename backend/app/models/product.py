@@ -1,3 +1,4 @@
+from app.core.config import settings
 from sqlalchemy import Column, Integer, String, Float, Text, JSON, DateTime
 from datetime import datetime, timezone
 from app.core.database import Base
@@ -9,7 +10,7 @@ class Product(Base):
     sku = Column(String(100), unique=True, index=True, nullable=False)
     name = Column(String(255), nullable=False)
     category = Column(String(100), index=True, nullable=False)
-    brand = Column(String(100), default="Gulmohar Home", nullable=False)
+    brand = Column(String(100), default=lambda: settings.DEFAULT_BRAND, nullable=False)
     mrp = Column(Float, nullable=True)
     price = Column(Float, nullable=False)
     stock = Column(Integer, default=0, nullable=False)

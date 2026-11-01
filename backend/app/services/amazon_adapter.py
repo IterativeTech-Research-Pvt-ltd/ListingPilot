@@ -294,6 +294,9 @@ class AmazonAdapter:
                 for part in parts
             ]
 
+        # Legal Metrology (§3) reads only these: never values the draft's technical specs added
+        own_attrs = dict(attrs_lower)
+
         # ── 2.1 Dynamic Category-Specific Attributes Mapping ─────────────────
         tech_specs = draft_data.get("technical_specs") or {}
         for tk, tv in tech_specs.items():
@@ -355,35 +358,48 @@ class AmazonAdapter:
                 attributes[attr_snake] = [{"value": str(tv), "marketplace_id": mp_id}]
 
         # ── 3. India Legal Metrology & Regulatory Mandates (A21TJRUUN4KGV) ────
-        country = attrs_lower.get("country of origin") or attrs_lower.get("origin") or "India"
-        iso_country = "IN" if "india" in str(country).lower() else "CN" if "china" in str(country).lower() else "IN"
-        attributes["country_of_origin"] = [{"value": iso_country, "marketplace_id": mp_id}]
+        # Only from the product's own attributes (the same names the Meesho template uses).
+        # A missing value is left out so Amazon's validation reports it, rather than sent made up.
+        for key in ("country_of_origin", "manufacturer", "packer", "importer", "net_quantity",
+                    "generic_name", "maximum_retail_price"):
+            attributes.pop(key, None)  # set by the spec passthrough above, i.e. from draft copy
 
-        manufacturer = attrs_lower.get("manufacturer") or f"{brand} Creations Private Limited"
-        attributes["manufacturer"] = [{"value": str(manufacturer), "marketplace_id": mp_id}]
+        def legal(*keys):
+            for k in keys:
+                if own_attrs.get(k):
+                    return str(own_attrs[k])
+            return None
 
-        packer = attrs_lower.get("packer") or f"{brand} Central Fulfillment Hub, Sanganer, Jaipur, RJ - 302029"
-        attributes["packer"] = [{"value": str(packer), "marketplace_id": mp_id}]
+        country = legal("country of origin", "origin")
+        iso_country = {"india": "IN", "china": "CN"}.get(str(country).strip().lower()) if country else None
+        if iso_country:
+            attributes["country_of_origin"] = [{"value": iso_country, "marketplace_id": mp_id}]
 
-        importer = attrs_lower.get("importer") or (
-            "Not Applicable (Manufactured in India)" if iso_country == "IN" else f"{brand} India Impex Pvt Ltd"
-        )
-        attributes["importer"] = [{"value": str(importer), "marketplace_id": mp_id}]
+        for amazon_attr, name_keys, address_key in [
+            ("manufacturer", ("manufacturer", "manufacturer name"), "manufacturer address"),
+            ("packer", ("packer", "packer name"), "packer address"),
+            ("importer", ("importer", "importer name"), "importer address"),
+        ]:
+            name = legal(*name_keys)
+            if name:
+                address = legal(address_key)
+                value = f"{name}, {address}" if address else name
+                attributes[amazon_attr] = [{"value": value, "marketplace_id": mp_id}]
 
-        attributes["net_quantity"] = [{"value": 1, "unit": "count", "marketplace_id": mp_id}]
+        net_qty = legal("net quantity", "net quantity (n)")
+        if net_qty:
+            attributes["net_quantity"] = [{"value": net_qty, "unit": "count", "marketplace_id": mp_id}]
 
-        generic_name = (
-            attrs_lower.get("generic name")
-            or product_data.get("category")
-            or "Consumer Merchandise"
-        )
-        attributes["generic_name"] = [{"value": str(generic_name), "marketplace_id": mp_id}]
+        generic_name = legal("generic name") or product_data.get("category")
+        if generic_name:
+            attributes["generic_name"] = [{"value": str(generic_name), "marketplace_id": mp_id}]
 
-        # Maximum Retail Price (Mandatory for India Legal Metrology)
-        mrp = product_data.get("mrp") or (float(product_data.get("price", 0)) * 1.35)
-        attributes["maximum_retail_price"] = [
-            {"value_with_tax": round(float(mrp), 2), "currency": "INR", "marketplace_id": mp_id}
-        ]
+        # Maximum Retail Price (Mandatory for India Legal Metrology): the catalogue's MRP only
+        mrp = product_data.get("mrp")
+        if mrp:
+            attributes["maximum_retail_price"] = [
+                {"value_with_tax": round(float(mrp), 2), "currency": "INR", "marketplace_id": mp_id}
+            ]
 
         # ── 4. Purchasable Offer & Inventory ─────────────────────────────────
         selling_price = float(product_data.get("price") or 0.0)

@@ -22,7 +22,7 @@ ListingPilot turns one master product sheet into complete, rule-checked listings
 
 #### Product Database and CRUD
 
-- SQLAlchemy Product model on Neon PostgreSQL: SKU, name, category, brand, MRP, price, stock, image URLs, dynamic JSON attributes.
+- SQLAlchemy Product model on Supabase PostgreSQL: SKU, name, category, brand, MRP, price, stock, image URLs, dynamic JSON attributes.
 - Full CRUD: `GET|POST /api/v1/catalogue/products`, `PUT|DELETE /api/v1/catalogue/products/{id}`
 - Stats endpoint: `GET /api/v1/catalogue/stats`
 
@@ -75,7 +75,7 @@ ListingPilot turns one master product sheet into complete, rule-checked listings
 
 #### Pilot Dataset
 
-- 59 realistic artisan products from pilot brand Gulmohar Home, Jaipur.
+- 19 realistic artisan products from pilot brand Gulmohar Home, Jaipur.
 - Categories: Bedsheets, Pooja items / Brassware, Kurtas, Planters, Ethnic Footwear, Quilts.
 
 ---
@@ -86,14 +86,14 @@ ListingPilot turns one master product sheet into complete, rule-checked listings
 
 - Python 3.11+ with uv (or pip)
 - Node.js 18+ with npm
-- Neon PostgreSQL account (DATABASE_URL pre-filled in .env)
+- Supabase project (DATABASE_URL and TEST_DATABASE_URL in .env; see .env.example)
 
 ### 1. Backend (FastAPI)
 
 ```powershell
 # From project root D:\Education\Work\ListingPilot
 
-# Seed Neon DB with 59 pilot products
+# Seed the database with 19 pilot products
 .venv\Scripts\python.exe backend/app/seeds/seed_pilot_data.py
 
 # Start FastAPI dev server
@@ -154,7 +154,7 @@ ListingPilot/
 │       │   └── settings_service.py     Brand voice and credentials
 │       ├── api/v1/endpoints/
 │       │   ├── catalogue.py, drafts.py, reports.py, settings.py, health.py
-│       ├── seeds/seed_pilot_data.py    59 Gulmohar Home products
+│       ├── seeds/seed_pilot_data.py    19 Gulmohar Home products
 │       └── main.py                     FastAPI app, CORS, router wiring
 ├── frontend/
 │   └── app/
@@ -175,7 +175,7 @@ ListingPilot/
 
 | Variable                    | Required | Description                                 |
 | --------------------------- | -------- | ------------------------------------------- |
-| DATABASE_URL                | YES      | Neon PostgreSQL connection string           |
+| DATABASE_URL                | YES      | Supabase PostgreSQL connection string       |
 | OPENROUTER_API_KEY          | YES      | OpenRouter key (free tier works)            |
 | OPENROUTER_MODEL            | no       | Default: nvidia/nemotron-3.5-lightning:free |
 | ANTHROPIC_API_KEY           | no       | Optional direct Claude API key              |
@@ -225,3 +225,4 @@ ListingPilot/
 Full interactive docs at http://127.0.0.1:8000/api/v1/docs
 
 <!-- .venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --reload --port 8000 -->
+ 

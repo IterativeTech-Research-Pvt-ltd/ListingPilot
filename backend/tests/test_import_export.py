@@ -82,13 +82,16 @@ def test_import_tally_xml():
     assert p["items"][0]["stock"] == 45
 
 def test_import_validation_errors():
-    # Test row with missing required SKU and missing name
+    # A row without a SKU is reported and skipped; no SKU is made up from the name
     bad_csv = """SKU,Product Name,Category,Selling Price,Stock
 ,Bad Product Without SKU,General,100,5
 """
-    # Note: Missing SKU with name auto-generates warning SKU per our smart parser
     files = {"file": ("bad.csv", io.BytesIO(bad_csv.encode("utf-8")), "text/csv")}
     response = client.post("/api/v1/catalogue/import", files=files)
     assert response.status_code == 200
     res_json = response.json()
-    assert res_json["warnings_count"] >= 1
+    assert res_json["success"] is False
+    assert res_json["failed_count"] == 1
+    assert res_json["imported_count"] + res_json["updated_count"] == 0
+    assert res_json["errors"][0]["field"] == "sku"
+    assert client.get("/api/v1/catalogue/products?search=Bad Product Without SKU").json()["total"] == 0

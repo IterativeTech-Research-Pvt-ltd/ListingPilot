@@ -9,9 +9,10 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "ListingPilot"
     API_V1_STR: str = "/api/v1"
     
-    # Database: Exclusively Neon PostgreSQL
+    # Database: Exclusively Supabase PostgreSQL
     DATABASE_URL: str = ""
-    # Tests only: a separate Neon branch/database. Its tables are dropped and recreated each run.
+    # Tests only: a separate database (e.g. listingpilot_test on the same Supabase instance).
+    # Its tables are dropped and recreated each run.
     TEST_DATABASE_URL: str = ""
     
     # CORS

@@ -24,8 +24,9 @@ class RuleEngine:
         cat_info = next((c for c in CATEGORIES_INFO if c["category"].lower() == product.category.lower()), None)
         required_attrs = cat_info["required_attrs"] if cat_info else ["Material"]
         
-        prod_attrs = product.attributes or {}
-        missing_attrs = [attr for attr in required_attrs if not str(prod_attrs.get(attr, "")).strip()]
+        # Case-insensitive: the importer title-cases headers ("Thread count" is stored as "Thread Count")
+        prod_attrs = {str(k).strip().lower(): v for k, v in (product.attributes or {}).items()}
+        missing_attrs = [attr for attr in required_attrs if not str(prod_attrs.get(attr.lower(), "") or "").strip()]
         for miss in missing_attrs:
             issues.append({
                 "level": "error",

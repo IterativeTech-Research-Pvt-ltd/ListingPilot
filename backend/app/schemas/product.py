@@ -1,12 +1,13 @@
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, Dict, Any, List, Union
 from datetime import datetime
+from app.core.config import settings
 
 class ProductBase(BaseModel):
     sku: str = Field(..., description="Unique product SKU/identifier")
     name: str = Field(..., description="Product title / name in master catalogue")
     category: str = Field(..., description="Product category (e.g. Bedsheets, Kurtas, Pooja items)")
-    brand: str = Field(default="Gulmohar Home", description="Brand name")
+    brand: str = Field(default_factory=lambda: settings.DEFAULT_BRAND, description="Brand name (defaults to DEFAULT_BRAND)")
     mrp: Optional[float] = Field(default=None, description="Maximum Retail Price in INR")
     price: float = Field(..., description="Selling Price in INR")
     stock: int = Field(default=0, description="Available stock quantity")

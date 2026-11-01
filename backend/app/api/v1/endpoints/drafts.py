@@ -1,3 +1,4 @@
+import re
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -35,6 +36,17 @@ class DraftUpdateRequest(BaseModel):
 
 class RejectRequest(BaseModel):
     reason: str
+
+
+def _drafts_by_product(db: Session, products: List[Product], marketplace: Optional[str] = None) -> Dict[tuple, ListingDraft]:
+    """{(product_id, marketplace): draft} in one query; a query per product takes ~0.4 s each to the remote database."""
+    ids = [p.id for p in products]
+    if not ids:
+        return {}
+    query = db.query(ListingDraft).filter(ListingDraft.product_id.in_(ids))
+    if marketplace:
+        query = query.filter(ListingDraft.marketplace == marketplace)
+    return {(d.product_id, d.marketplace): d for d in query.all()}
 
 
 # ── Single Product Draft Generation ──────────────────────────────────────────
@@ -438,15 +450,12 @@ async def publish_draft(
     elif draft.marketplace == "flipkart":
         result = await FlipkartAdapter.create_listing(draft_data, product_data)
     elif draft.marketplace == "meesho":
-        # For Meesho, publishing assigns external ID and certifies the item for bulk catalog export
-        result = {
-            "success": True,
-            "marketplace": "meesho",
-            "sku": product.sku,
-            "external_listing_id": f"MSH-{product.sku}",
-            "status": "live",
-            "message": "Packaged and ready in Meesho bulk catalog upload sheet."
-        }
+        # Meesho has no listing API: nothing is published from here and no ID exists until Meesho assigns one
+        raise HTTPException(status_code=409, detail=(
+            "Meesho listings can't be published from ListingPilot. Download the Meesho sheet "
+            "(Multi-Channel Hub), upload it at supplier.meesho.com > Catalog Upload > Bulk, and Meesho "
+            "assigns the listing after its QC."
+        ))
     else:
         raise HTTPException(status_code=400, detail=f"Unknown marketplace: {draft.marketplace}")
 
@@ -566,6 +575,7 @@ def get_marketplace_status(
             )
         )
     products = query.order_by(Product.id.asc()).all()
+    drafts = _drafts_by_product(db, products)
 
     result = []
     for product in products:
@@ -579,10 +589,7 @@ def get_marketplace_status(
         }
 
         for mp in ["amazon", "flipkart", "meesho"]:
-            draft = db.query(ListingDraft).filter(
-                ListingDraft.product_id == product.id,
-                ListingDraft.marketplace == mp
-            ).first()
+            draft = drafts.get((product.id, mp))
 
             if draft:
                 row["marketplaces"][mp] = {
@@ -631,12 +638,10 @@ def export_meesho_catalog(
     if not products:
         raise HTTPException(status_code=404, detail="No products found to generate Meesho bulk catalog.")
 
+    drafts = _drafts_by_product(db, products, "meesho")
     items = []
     for prod in products:
-        draft = db.query(ListingDraft).filter(
-            ListingDraft.product_id == prod.id,
-            ListingDraft.marketplace == "meesho"
-        ).first()
+        draft = drafts.get((prod.id, "meesho"))
         items.append({
             "product": prod,
             "draft": draft.to_dict() if draft else None
@@ -655,6 +660,35 @@ def export_meesho_catalog(
         buf,
         media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+@router.get("/meesho/fill-in-sheet", summary="Download the Meesho fields each product is missing, ready to fill and re-import")
+def meesho_fill_in_sheet(
+    category: Optional[str] = Query(None, description="Category filter"),
+    db: Session = Depends(get_db)
+):
+    query = db.query(Product)
+    if category and category != "All":
+        query = query.filter(Product.category == category)
+    products = query.order_by(Product.id.asc()).all()
+    if not products:
+        raise HTTPException(status_code=404, detail="No products found.")
+
+    drafts = _drafts_by_product(db, products, "meesho")
+    items = []
+    for prod in products:
+        draft = drafts.get((prod.id, "meesho"))
+        items.append({"product": prod, "draft": draft.to_dict() if draft else None})
+
+    buf = MeeshoAdapter.build_fill_in_sheet(items)
+    if buf is None:
+        raise HTTPException(status_code=404, detail="Nothing to fill: these products have every compulsory Meesho field.")
+    safe_cat = re.sub(r"[^a-zA-Z0-9_-]", "_", category or "All")
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="Meesho_fill_in_{safe_cat}.xlsx"'}
     )
 
 

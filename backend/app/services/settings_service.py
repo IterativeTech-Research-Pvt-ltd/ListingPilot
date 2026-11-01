@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
+from sqlalchemy import text
 from app.core.config import settings
 
 # Runtime store for admin-edited settings and credentials. It is gitignored and created on
@@ -210,10 +211,11 @@ class SettingsService:
         cls._save(data)
 
     @classmethod
-    def get_system_health(cls) -> Dict[str, Any]:
+    def get_system_health(cls, db=None) -> Dict[str, Any]:
         """
         Comprehensive system monitoring report (ADM-4):
         Checks active connections, sync timestamps, and triggers alerts for failed jobs or expired keys.
+        The database is queried on every call; nothing is reported as connected without checking.
         """
         data = cls._ensure_loaded()
         last_sync = data.get("last_sync", {})
@@ -239,15 +241,30 @@ class SettingsService:
                 "message": "Flipkart sandbox active. Add Developer App ID & Secret in Admin tab for live push."
             })
 
+        database = {"status": "not_checked", "type": "PostgreSQL (Supabase)"}
+        if db is not None:
+            try:
+                db.execute(text("SELECT 1"))
+                database["status"] = "connected"
+            except Exception as e:
+                database.update(status="unreachable", error=str(getattr(e, "orig", None) or e).strip().splitlines()[0])
+                alerts.append({
+                    "severity": "warn",
+                    "channel": "database",
+                    "title": "Database Unreachable",
+                    "message": f"The API cannot query the database: {database['error']}",
+                })
+
+        ai = cls._ai_engine_status(creds, lambda _v: "")
         return {
-            "status": "healthy",
+            "status": "healthy" if database["status"] == "connected" else "degraded",
             "phase": 4,
             "system_time": datetime.now(timezone.utc).isoformat(),
             "services": {
-                "database": {"status": "connected", "type": "PostgreSQL Neon / SQLite local"},
-                "ai_content_engine": {"status": "connected", "provider": "OpenRouter / Claude"},
-                "amazon_sp_api": {"status": "connected", "mode": "sandbox_stub"},
-                "flipkart_seller_api": {"status": "connected", "mode": "sandbox_stub"},
+                "database": database,
+                "ai_content_engine": {"status": ai["status"], "provider": ai["provider"], "model": ai["model"]},
+                "amazon_sp_api": {"status": "ready" if creds.get("amazon_sp_api_client_id") else "sandbox_stub"},
+                "flipkart_seller_api": {"status": "ready" if creds.get("flipkart_app_id") else "sandbox_stub"},
                 "meesho_exporter": {"status": "ready", "mode": "excel_bulk_generator"}
             },
             "last_sync": last_sync,

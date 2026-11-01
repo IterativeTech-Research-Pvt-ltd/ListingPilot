@@ -65,6 +65,41 @@ def test_groq_provider_calls_groq_with_json_mode():
     assert "openrouter.ai" not in url
 
 
+def test_model_output_missing_fields_is_normalized_not_a_crash():
+    # Bullets sent as one string, keywords missing, specs as a list: the draft code reads all of these
+    reply = json.dumps({"title": "Gulmohar Home Cotton Bedsheet", "bullets": "STYLE — a\nMATERIAL — b",
+                        "description": "Cotton bedsheet.", "technical_specs": ["not", "a", "dict"]})
+
+    async def fake_post(self, url, headers=None, json=None):
+        return _response(200, url, {"choices": [{"message": {"content": reply}}]})
+
+    with patch.object(httpx.AsyncClient, "post", fake_post):
+        result = asyncio.run(AIService.generate_listing(_product(), marketplace="amazon"))
+
+    assert "engine" not in result
+    assert result["bullets"] == ["STYLE — a", "MATERIAL — b"]
+    assert result["keywords"] == []
+    assert result["technical_specs"] == {"Material": "100% cotton"}  # only the product's own attribute
+
+
+def test_description_written_into_the_bullets_tries_the_next_model():
+    # Seen from gpt-oss: the description ends up as extra strings in the bullet list
+    broken = json.dumps({"title": "Gulmohar Home Cotton Bedsheet",
+                         "bullets": ["A", "B", "C", "D", "E", "description", ":", *["Elevate your bedroom"] * 6]})
+    calls = []
+
+    async def fake_post(self, url, headers=None, json=None):
+        calls.append(json["model"])
+        return _ok(url) if len(calls) > 1 else _response(200, url, {"choices": [{"message": {"content": broken}}]})
+
+    with patch.object(httpx.AsyncClient, "post", fake_post):
+        result = asyncio.run(AIService.generate_listing(_product(), marketplace="amazon"))
+
+    assert len(calls) == 2  # first model's reply rejected, second model's used
+    assert result["description"] == "Hand block printed cotton bedsheet."
+    assert len(result["bullets"]) == 5
+
+
 def test_reasoning_effort_sent_only_to_gpt_oss_models(monkeypatch):
     monkeypatch.setattr(settings, "GROQ_MODEL", "qwen/qwen3.8-27b")
     payloads = []

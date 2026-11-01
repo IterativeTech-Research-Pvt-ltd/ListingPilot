@@ -119,3 +119,21 @@ def test_system_health_monitoring():
     assert "meesho_exporter" in health["services"]
     assert "last_sync" in health
     assert "active_alerts" in health
+
+
+def test_system_health_reports_an_unreachable_database():
+    """The database status comes from a real query, never a hard-coded 'connected'."""
+    from sqlalchemy.exc import OperationalError
+    from app.services.settings_service import SettingsService
+
+    assert client.get("/api/v1/settings/system-health").json()["services"]["database"]["status"] == "connected"
+
+    class DeadSession:
+        def execute(self, *_a, **_k):
+            raise OperationalError("SELECT 1", {}, Exception('could not translate host name "db.x.supabase.co"\n'))
+
+    health = SettingsService.get_system_health(DeadSession())
+    assert health["status"] == "degraded"
+    assert health["services"]["database"]["status"] == "unreachable"
+    assert "could not translate host name" in health["services"]["database"]["error"]
+    assert any(a["channel"] == "database" for a in health["active_alerts"])

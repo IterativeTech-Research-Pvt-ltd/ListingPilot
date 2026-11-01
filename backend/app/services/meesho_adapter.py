@@ -19,6 +19,8 @@ import json
 import zipfile
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.worksheet.datavalidation import DataValidation
+import openpyxl.utils
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
@@ -31,39 +33,13 @@ PRIMARY_TEMPLATES_DIR = ROOT_DIR / "docs" / "meesho" / "templates"
 SECONDARY_TEMPLATES_DIR = ROOT_DIR / "docs" / "templates"
 MEESHO_CATEGORIES_FILE = ROOT_DIR / "docs" / "meesho" / "categories" / "meeshoCategories.json"
 
-MEESHO_HEADERS = [
-    "Product Name *",
-    "Size *",
-    "Meesho Price (₹) *",
-    "Wrong/Defective Price (₹)",
-    "MRP (₹) *",
-    "GST Rate (%) *",
-    "HSN Code *",
-    "Net Weight (gms) *",
-    "Inventory *",
-    "Country of Origin *",
-    "Manufacturer Name *",
-    "Manufacturer Address *",
-    "Packer Name",
-    "Packer Address",
-    "Importer Details",
-    "Material / Fabric",
-    "Generic Name",
-    "Net Quantity",
-    "Color / Finish",
-    "Care Instructions",
-    "Primary Image URL *",
-    "Secondary Image 2",
-    "Secondary Image 3",
-    "Secondary Image 4",
-    "Seller SKU ID *",
-    "Brand Name",
-    "Product Description *"
-]
-
 # Dropdown columns where a partial match would change meaning (identifiers, and colours, where
 # "Indigo and white" must not become "White"): only exact or numeric matches are accepted
 EXACT_MATCH_COLUMNS = ("hsn", "gst", "country", "group id", "color", "colour")
+
+# Template columns whose name clashes with an attribute that means something else: the Bedsheets
+# "Size" dropdown (Double Queen, Single...) is read from "Bed Size", since "Size" holds the measurement
+SELLER_ATTRIBUTE_FOR_COLUMN = {("bedsheets", "size"): "Bed Size"}
 
 # Meesho's catalogue QC flags these words in descriptions (seen in processed upload files)
 MEESHO_FLAGGED_WORDS = ("care", "comfort", "colors")
@@ -111,6 +87,24 @@ def _grams(text: Optional[str]) -> Optional[int]:
 
 def _fmt_num(x: float) -> str:
     return str(int(x)) if float(x).is_integer() else str(x)
+
+
+def _dimension_option(size_text: Optional[str], variation: Optional[str], options: List[str]) -> Optional[str]:
+    """
+    The one 'A*B-(Label)' option (e.g. '90*100-(Double)') with the same two sides as the stated
+    size, narrowed by the row's Variation when several share those sides. None unless exactly one fits.
+    """
+    dims = _inch_dims(size_text)
+    if not dims:
+        return None
+    fits = []
+    for opt in options:
+        m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*\*\s*(\d+(?:\.\d+)?)\s*-\s*\((.+)\)\s*", opt)
+        if m and sorted((float(m.group(1)), float(m.group(2)))) == sorted(dims):
+            fits.append((opt, m.group(3).strip().lower()))
+    if len(fits) > 1 and variation:
+        fits = [f for f in fits if f[1] == variation.strip().lower()]
+    return fits[0][0] if len(fits) == 1 else None
 
 
 class MeeshoAdapter:
@@ -288,10 +282,12 @@ class MeeshoAdapter:
     @classmethod
     def find_template(cls, category_name: Optional[str]) -> Optional[Dict[str, Any]]:
         """
-        Agnostically matches an item's category name against registered templates using:
-          1. Exact match
-          2. Stemmed / singular-plural normalization
-          3. Keyword / substring containment
+        Matches an item's category name against registered templates using:
+          1. Exact (normalized) match
+          2. A taxonomy path equal to the template's own path
+          3. The category's head noun ("Double Bedsheets" -> Bedsheets, "Brother & Sister T-Shirts" -> Tshirts)
+          4. Head-noun synonyms ("Tees" -> Tshirts)
+        Whole words only: "Steel bottles", "Settees" and "Sweatshirts" match no template.
         """
         if not category_name:
             return None
@@ -303,49 +299,51 @@ class MeeshoAdapter:
         if norm_key in reg:
             return reg[norm_key]
 
-        # 2. Check full hierarchy path match (e.g. from meeshoCategories.json)
-        cat_lower = category_name.lower()
-        for tmpl in reg.values():
-            if tmpl.get("hierarchy") and cat_lower in tmpl["hierarchy"].lower():
-                return tmpl
+        # 2. A full taxonomy path (e.g. from meeshoCategories.json), compared with the template's own path
+        if "/" in category_name:
+            path = category_name.strip().lower()
+            for tmpl in reg.values():
+                m = re.search(r"\(([^)]*)\)", tmpl.get("hierarchy") or "")
+                if m and m.group(1).strip().lower() == path:
+                    return tmpl
+            category_name = category_name.rsplit("/", 1)[-1]
+            norm_key = cls._normalize_cat_key(category_name)
+            if norm_key in reg:
+                return reg[norm_key]
 
-        # 3. Check registered templates by descending category length
-        # (Ensures 'tshirts' is checked before 'shirts', preventing substring shadowing)
+        # 3. Head noun of each part, longest template first so 'tshirts' wins over 'shirts'
+        heads = cls._head_keys(category_name)
         sorted_tmpls = sorted(
             reg.values(),
             key=lambda t: len(t.get("normalized_category", "")),
             reverse=True
         )
         for tmpl in sorted_tmpls:
-            t_cat = tmpl["normalized_category"]
-            if norm_key in t_cat or t_cat in norm_key:
+            if tmpl["normalized_category"] in heads:
                 return tmpl
 
-        # 4. Keyword / synonym matching (sorted by descending length)
-        synonyms = [
-            ("bedsheets", "bedsheets"),
-            ("bedsheet", "bedsheets"),
-            ("bedding", "bedsheets"),
-            ("duvet", "bedsheets"),
-            ("t-shirts", "tshirts"),
-            ("t-shirt", "tshirts"),
-            ("tshirts", "tshirts"),
-            ("tshirt", "tshirts"),
-            ("tees", "tshirts"),
-            ("tee", "tshirts"),
-            ("shirts", "shirts"),
-            ("shirt", "shirts"),
-            ("sneakers", "sneakers"),
-            ("sneaker", "sneakers"),
-            ("footwear", "sneakers"),
-            ("shoes", "sneakers"),
-            ("shoe", "sneakers"),
-        ]
-        for syn, target in synonyms:
-            if syn in norm_key and target in reg:
+        # 4. Head-noun synonyms (normalized head -> template key). Not 'bedding' or 'duvet': pet
+        # bedding or a duvet in the Bedsheets template fails Meesho QC, like footwear in Sneakers
+        synonyms = {"tee": "tshirts"}
+        for syn, target in synonyms.items():
+            if syn in heads and target in reg:
                 return reg[target]
 
         return None
+
+    @classmethod
+    def _head_keys(cls, name: str) -> set:
+        """
+        Normalized head nouns of each '&' / ',' separated part, with the one or two words before
+        them joined on, so 'T-Shirts' and 'Bed Sheets' give 'tshirt' and 'bedsheet'.
+        """
+        keys = set()
+        for part in re.split(r"[&,;+/]|\band\b", (name or "").lower()):
+            words = re.findall(r"[a-z0-9]+", part)
+            for n in (1, 2, 3):
+                if len(words) >= n:
+                    keys.add(cls._normalize_cat_key("".join(words[-n:])))
+        return keys
 
     @classmethod
     def _normalize_cat_key(cls, name: str) -> str:
@@ -460,6 +458,11 @@ class MeeshoAdapter:
         }
 
     @classmethod
+    def _seller_attribute(cls, category: str, col_name: str) -> str:
+        """Attribute a column is read from: the column's own name unless that name means something else."""
+        return SELLER_ATTRIBUTE_FOR_COLUMN.get((category.strip().lower(), col_name.strip().lower()), col_name)
+
+    @classmethod
     def _template_value(cls, cn: str, col_name: str, row: Dict[str, Any], category: str) -> Any:
         """
         Value for one official-template column, taken only from the product's own data.
@@ -470,10 +473,11 @@ class MeeshoAdapter:
 
         attrs = row["attrs"]
         # An attribute named exactly like the column wins, so sellers can set Meesho values directly
-        direct = _attr(attrs, col_name)
+        seller_attr = cls._seller_attribute(category, col_name)
+        direct = _attr(attrs, seller_attr)
         if "net weight" in cn:
             return _grams(direct or _attr(attrs, "Net Weight (gms)", "Net Weight", "Weight"))
-        if direct is not None:
+        if direct is not None or seller_attr != col_name:
             return direct
 
         size_text = _attr(attrs, "Size", "Dimensions")
@@ -502,7 +506,8 @@ class MeeshoAdapter:
             return row["images"][n - 1] if len(row["images"]) >= n else None
         if "color" in cn or "colour" in cn:
             return _attr(attrs, "Color", "Colour")
-        if "fabric" in cn or "material" in cn:
+        # Exact columns only: 'Sole Material' is not the upper's material
+        if cn in ("fabric", "material"):
             return _attr(attrs, "Fabric", "Material")
         if "generic name" in cn:
             return _attr(attrs, "Generic Name") or category
@@ -522,7 +527,19 @@ class MeeshoAdapter:
         if ("length" in cn or "width" in cn) and "cm" in cn:
             dims = _inch_dims(size_text)
             return round((dims[0] if "length" in cn else dims[1]) * 2.54) if dims else None
-        if "pattern" in cn or "print" in cn:
+        # Newer templates: the stated inch size as-is, with its unit in a separate column
+        if cn in ("product length", "product width"):
+            dims = _inch_dims(size_text)
+            if not dims:
+                return None
+            side = dims[0] if "length" in cn else dims[1]
+            return int(side) if side.is_integer() else side
+        if cn == "product dimension unit":
+            return "inch" if _inch_dims(size_text) else None
+        if cn == "dimensions (inches)":
+            return size_text
+        # Exact columns only: 'Weave Pattern' (twill, oxford) is not the print pattern
+        if cn in ("pattern", "print or pattern type"):
             return _attr(attrs, "Pattern", "Print")
         if "product id" in cn or "style id" in cn:
             return row["style_id"]
@@ -605,6 +622,7 @@ class MeeshoAdapter:
         for idx, item in enumerate(products_with_drafts):
             target_row = 5 + idx
             row = cls._row_inputs(item)
+            written: Dict[str, Any] = {}
 
             for col_idx, col_name in col_map.items():
                 cell = ws.cell(row=target_row, column=col_idx)
@@ -618,11 +636,13 @@ class MeeshoAdapter:
                 # Write dropdown columns only as an option the template itself lists
                 if col_idx in dropdowns and val is not None and str(val).strip():
                     matched = cls._match_dropdown_option(val, dropdowns[col_idx], col_name=col_name)
+                    if matched is None and cn == "dimensions (inches)":
+                        matched = _dimension_option(str(val), written.get("Variation"), dropdowns[col_idx])
                     if matched is None:
                         problems.append({
                             "sku": row["sku"], "category": category, "field": col_name,
-                            "reason": f"'{val}' is not one of the template's options; add a '{col_name}' attribute "
-                                      f"set to one of them",
+                            "reason": f"'{val}' is not one of the template's options; add a "
+                                      f"'{cls._seller_attribute(category, col_name)}' attribute set to one of them",
                             "blocking": col_idx in compulsory_cols,
                         })
                     val = matched
@@ -636,25 +656,13 @@ class MeeshoAdapter:
                         })
 
                 cell.value = val
+                written[col_name] = val
             ws.row_dimensions[target_row].height = 22
             name_rows.setdefault(row["title"].lower(), []).append(row)
 
         problems.extend(cls._duplicate_name_problems(name_rows, category))
         if any(pr["blocking"] for pr in problems):
             raise MeeshoExportIncomplete(problems)
-
-        # Backward compatibility: Add a 'Validate Sheet' alias tab if not present
-        # to ensure existing automated tests asserting wb['Validate Sheet'] pass seamlessly
-        if "Validate Sheet" not in wb.sheetnames:
-            ws_val = wb.create_sheet(title="Validate Sheet")
-            ws_val.append(MEESHO_HEADERS)
-            font_header = Font(name="Arial", size=10, bold=True, color="FFFFFF")
-            fill_purple = PatternFill(start_color="9C27B0", end_color="9C27B0", fill_type="solid")
-            for col_idx in range(1, len(MEESHO_HEADERS) + 1):
-                cell = ws_val.cell(row=1, column=col_idx)
-                cell.font = font_header
-                cell.fill = fill_purple
-                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
         buf = io.BytesIO()
         wb.save(buf)
@@ -669,9 +677,10 @@ class MeeshoAdapter:
         force_zip: bool = False
     ) -> Tuple[io.BytesIO, str, str]:
         """
-        Groups items by category and generates corresponding populated Meesho flat files.
-          - If single category (or force_zip=False): returns (xlsx_buf, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename)
-          - If multiple categories with force_zip=True: returns (zip_buf, "application/zip", "ListingPilot_Meesho_Batch_Upload.zip")
+        Groups items by category and fills each category's official template.
+          - One category: returns (xlsx_buf, xlsx media type, filename)
+          - Several categories: returns a zip with one .xlsx per category
+        force_zip is accepted for API compatibility; several categories are always zipped.
         """
         # If category filter provided, restrict items
         if category_filter and category_filter != "All":
@@ -681,8 +690,9 @@ class MeeshoAdapter:
                 cat = getattr(p, "category", None) or item.get("category")
                 if cat and cls._normalize_cat_key(cat) == cls._normalize_cat_key(category_filter):
                     filtered.append(item)
-            if filtered:
-                products_with_drafts = filtered
+            products_with_drafts = filtered
+        if not products_with_drafts:
+            raise ValueError(f"No products in category '{category_filter}' to export.")
 
         # Group items by category
         grouped: Dict[str, List[Dict[str, Any]]] = {}
@@ -701,11 +711,11 @@ class MeeshoAdapter:
 
         for cat_name, cat_items in grouped.items():
             tmpl = cls.find_template(cat_name)
+            if not tmpl:
+                problems.extend(cls._missing_template_problems(cat_name, cat_items))
+                continue
             try:
-                if tmpl:
-                    buf = cls.populate_template(tmpl, cat_items)
-                else:
-                    buf = cls._generate_synthetic_workbook(cat_name, cat_items)
+                buf = cls.populate_template(tmpl, cat_items)
             except MeeshoExportIncomplete as e:
                 # Keep going so one response lists every category's problems
                 problems.extend(e.problems)
@@ -718,8 +728,8 @@ class MeeshoAdapter:
         if problems:
             raise MeeshoExportIncomplete(problems)
 
-        # Single category export or default non-zip export
-        if len(generated_files) == 1 or not force_zip:
+        # One category: the .xlsx itself; several: always a zip, so no category's file is dropped
+        if len(generated_files) == 1:
             file_name, buf = generated_files[0]
             return (
                 buf,
@@ -727,7 +737,6 @@ class MeeshoAdapter:
                 file_name,
             )
 
-        # Multiple categories with force_zip -> package into clean .zip archive
         zip_buf = io.BytesIO()
         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for file_name, file_buf in generated_files:
@@ -742,175 +751,131 @@ class MeeshoAdapter:
         )
 
     @classmethod
-    def generate_bulk_upload_file(
-        cls,
-        category: str,
-        products_with_drafts: List[Dict[str, Any]]
-    ) -> io.BytesIO:
+    def build_fill_in_sheet(cls, products_with_drafts: List[Dict[str, Any]]) -> Optional[io.BytesIO]:
         """
-        Maintains backward compatibility with existing tests and callers.
-        Attempts official template injection first; falls back to synthetic template if needed.
+        Workbook listing, per SKU, the Meesho fields its data is missing, laid out for the catalogue
+        import (column headers are the template's own names, which the export reads back as attributes).
+        Returns None when every product would export cleanly.
         """
-        tmpl = cls.find_template(category)
-        if tmpl:
-            return cls.populate_template(tmpl, products_with_drafts)
-        return cls._generate_synthetic_workbook(category, products_with_drafts)
-
-    @classmethod
-    def _generate_synthetic_workbook(
-        cls,
-        category: str,
-        products_with_drafts: List[Dict[str, Any]]
-    ) -> io.BytesIO:
-        """Generates a clean multi-sheet template from scratch when no official template is present."""
-        wb = openpyxl.Workbook()
-
-        font_header = Font(name="Arial", size=10, bold=True, color="FFFFFF")
-        font_data = Font(name="Arial", size=10)
-        font_example = Font(name="Arial", size=10, italic=True, color="555555")
-        fill_header = PatternFill(start_color="9C27B0", end_color="9C27B0", fill_type="solid")
-        fill_inst_title = PatternFill(start_color="F3E5F5", end_color="F3E5F5", fill_type="solid")
-        fill_example_row = PatternFill(start_color="F9F3FA", end_color="F9F3FA", fill_type="solid")
-        border_thin = Border(
-            left=Side(style="thin", color="E0E0E0"),
-            right=Side(style="thin", color="E0E0E0"),
-            top=Side(style="thin", color="E0E0E0"),
-            bottom=Side(style="thin", color="E0E0E0"),
-        )
-
-        # ── Sheet 1: Instructions ────────────────────────────────────────────
-        ws_inst = wb.active
-        ws_inst.title = "Instructions"
-
-        instructions_data = [
-            ("MEESHO BULK CATALOG LISTING INSTRUCTIONS (OFFICIAL FLAT FILE)", True),
-            ("1. How it works:", True),
-            ("• Fill all mandatory columns marked with an asterisk (*) in 'Validate Sheet'.", False),
-            ("• Do not modify header rows or delete any sheets.", False),
-            ("2. Image Guidelines:", True),
-            ("• Primary Image URL (Image 1) is mandatory and must show the front view on a white background.", False),
-            ("• Secondary images (Images 2, 3, 4) can show angles, dimensions, or lifestyle shots.", False),
-            ("3. Pricing & Discount:", True),
-            ("• Meesho Price: Regular selling price with all-reason returns.", False),
-            ("• Wrong/Defective Discount: Optional discount (₹20-25) for defective-only returns.", False),
-            ("4. Regulatory Compliance:", True),
-            ("• Manufacturer & Packer details (Name, Address, Pincode) and Country of Origin are compulsory.", False),
-        ]
-
-        for r_idx, (text, is_head) in enumerate(instructions_data, start=1):
-            cell = ws_inst.cell(row=r_idx, column=1, value=text)
-            if is_head:
-                cell.font = Font(name="Arial", size=11, bold=True, color="4A148C")
-                cell.fill = fill_inst_title
-            else:
-                cell.font = font_data
-            ws_inst.row_dimensions[r_idx].height = 20
-        ws_inst.column_dimensions["A"].width = 90
-
-        # ── Sheet 2: Example Sheet ───────────────────────────────────────────
-        ws_example = wb.create_sheet(title="Example Sheet")
-        ws_example.append(MEESHO_HEADERS)
-        for col_idx in range(1, len(MEESHO_HEADERS) + 1):
-            cell = ws_example.cell(row=1, column=col_idx)
-            cell.font = font_header
-            cell.fill = fill_header
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            cell.border = border_thin
-
-        sample_row = [
-            "Gulmohar Home Cotton Bedsheet Set with 2 Pillow Covers",
-            "Double",
-            1234.05,
-            22.0,
-            1699.0,
-            5.0,
-            "6304",
-            800,
-            40,
-            "India",
-            "Gulmohar Home Crafts",
-            "Sanganer Artisan Cluster, Jaipur, Rajasthan 302029",
-            "Gulmohar Home Logistics",
-            "Plot 42, Sitapura Industrial Area, Jaipur 302022",
-            "Not Applicable (Made in India)",
-            "100% Cotton",
-            "Bedsheet",
-            "1 Bedsheet with 2 Pillow Covers",
-            "Indigo Blue",
-            "Gentle machine wash cold",
-            "https://images.unsplash.com/photo-1522771739844-6a9f6d5f14af",
-            "https://images.unsplash.com/photo-1584100936595-c0654b55a2e2",
-            "",
-            "",
-            "JBP-101",
-            "Gulmohar Home",
-            "Authentic Sanganeri block print on premium cotton.",
-        ]
-        ws_example.append(sample_row)
-        for col_idx in range(1, len(sample_row) + 1):
-            cell = ws_example.cell(row=2, column=col_idx)
-            cell.font = font_example
-            cell.fill = fill_example_row
-            cell.border = border_thin
-
-        # ── Sheet 3: Validate Sheet ──────────────────────────────────────────
-        ws_val = wb.create_sheet(title="Validate Sheet")
-        ws_val.append(MEESHO_HEADERS)
-        for col_idx in range(1, len(MEESHO_HEADERS) + 1):
-            cell = ws_val.cell(row=1, column=col_idx)
-            cell.font = font_header
-            cell.fill = fill_header
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-            cell.border = border_thin
-
         problems: List[Dict[str, Any]] = []
-        name_rows: Dict[str, List[Dict[str, Any]]] = {}
+        options: Dict[str, List[str]] = {}
+        field_order: List[str] = []
+        attr_names: Dict[str, str] = {}
+        for cat_name, cat_items in cls._group_by_category(products_with_drafts).items():
+            tmpl = cls.find_template(cat_name)
+            if tmpl:
+                for col_idx, col_name in tmpl["columns"].items():
+                    if col_name not in field_order:
+                        field_order.append(col_name)
+                    attr_names.setdefault(col_name, cls._seller_attribute(cat_name, col_name))
+                    if col_idx in tmpl.get("dropdowns", {}):
+                        options.setdefault(col_name, tmpl["dropdowns"][col_idx])
+            if not tmpl:
+                problems.extend(cls._missing_template_problems(cat_name, cat_items))
+                continue
+            try:
+                cls.populate_template(tmpl, cat_items)
+            except MeeshoExportIncomplete as e:
+                problems.extend(e.problems)
+        blocking = [p for p in problems if p["blocking"]]
+        if not blocking:
+            return None
+
+        image_fields = ["Image 1 (Front)", "Image 2", "Image 3", "Image 4"]
+        # Product Name problems are fixed by regenerating the draft, not by filling a cell
+        fields = [f for f in field_order if any(p["field"] == f for p in blocking)
+                  and f != "Product Name" and not f.lower().startswith("image")]
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Fill in"
+        # Headers are the attribute names the export reads back, e.g. "Bed Size" for Bedsheets' Size
+        headers = ["SKU", "Product Name", "Category", *[attr_names.get(f, f) for f in fields], *image_fields]
+        ws.append(headers)
+        bold = Font(name="Arial", size=10, bold=True)
+        need_fill = PatternFill(start_color="FFF3CD", end_color="FFF3CD", fill_type="solid")
+        for cell in ws[1]:
+            cell.font = bold
+
+        needs = {(p["sku"], p["field"]) for p in blocking}
+        skus_needing = {sku for sku, _ in needs}
         for item in products_with_drafts:
             row = cls._row_inputs(item)
-            attrs = row["attrs"]
+            if row["sku"] not in skus_needing:
+                continue
+            category = getattr(item.get("product"), "category", None) or item.get("category")
             images = row["images"]
+            ws.append([row["sku"], row["name"], category, *[None] * len(fields),
+                       *[images[i] if len(images) > i else None for i in range(4)]])
+            r = ws.max_row
+            for offset, f in enumerate([*fields, *image_fields]):
+                if (row["sku"], f) in needs:
+                    ws.cell(row=r, column=4 + offset).fill = need_fill
 
-            row_data = [
-                row["title"],
-                _attr(attrs, "Size", "Variation"),
-                row["price"],
-                _attr(attrs, "Wrong/Defective Return Discount", "Wrong/Defective Discount"),
-                row["mrp"],
-                _attr(attrs, "GST %", "GST Rate", "GST"),
-                _attr(attrs, "HSN ID", "HSN Code", "HSN"),
-                _grams(_attr(attrs, "Net Weight (gms)", "Net Weight", "Weight")),
-                row["stock"],
-                _attr(attrs, "Country of Origin"),
-                _attr(attrs, "Manufacturer Name"),
-                _attr(attrs, "Manufacturer Address"),
-                _attr(attrs, "Packer Name"),
-                _attr(attrs, "Packer Address"),
-                _attr(attrs, "Importer Details", "Importer Name"),
-                _attr(attrs, "Material", "Fabric"),
-                _attr(attrs, "Generic Name") or category,
-                _attr(attrs, "Net Quantity", "Net Quantity (N)"),
-                _attr(attrs, "Color", "Colour"),
-                _attr(attrs, "Care Instructions", "Care"),
-                *[images[i] if len(images) > i else None for i in range(4)],
-                row["sku"],
-                row["brand"],
-                row["description"],
-            ]
-            for header, val in zip(MEESHO_HEADERS, row_data):
-                if header.endswith("*") and (val is None or not str(val).strip()):
-                    problems.append({
-                        "sku": row["sku"], "category": category, "field": header.rstrip(" *"),
-                        "reason": "compulsory and missing from the product's data",
-                        "blocking": True,
-                    })
-            ws_val.append(row_data)
-            name_rows.setdefault(row["title"].lower(), []).append(row)
+        # Dropdowns with the template's exact option spellings
+        ws_opt = wb.create_sheet("Allowed values")
+        opt_col = 0
+        for offset, f in enumerate(fields):
+            if f not in options:
+                continue
+            opt_col += 1
+            letter = openpyxl.utils.get_column_letter(opt_col)
+            ws_opt.cell(row=1, column=opt_col, value=attr_names.get(f, f)).font = bold
+            for i, opt in enumerate(options[f], start=2):
+                ws_opt.cell(row=i, column=opt_col, value=opt)
+            dv = DataValidation(type="list", formula1=f"='Allowed values'!${letter}$2:${letter}${len(options[f]) + 1}",
+                                allow_blank=True)
+            ws.add_data_validation(dv)
+            target = openpyxl.utils.get_column_letter(4 + offset)
+            dv.add(f"{target}2:{target}{max(ws.max_row, 2)}")
 
-        problems.extend(cls._duplicate_name_problems(name_rows, category))
-        if problems:
-            raise MeeshoExportIncomplete(problems)
+        ws_why = wb.create_sheet("What's wrong")
+        ws_why.append(["SKU", "Category", "Field", "Problem"])
+        for cell in ws_why[1]:
+            cell.font = bold
+        for p in problems:
+            ws_why.append([p["sku"], p["category"], p["field"], p["reason"]])
+
+        ws_how = wb.create_sheet("How to use")
+        for line in [
+            "1. Fill the highlighted cells on 'Fill in'. Dropdown cells take only Meesho's own values.",
+            "2. Replace the image links with links from Meesho's supplier panel image uploader (stock photos fail QC).",
+            "3. Import this file in ListingPilot's Catalogue tab. Values are saved to each SKU; nothing else changes.",
+            "4. Export the Meesho sheet again. 'What's wrong' lists every problem found, including non-blocking ones.",
+        ]:
+            ws_how.append([line])
 
         buf = io.BytesIO()
         wb.save(buf)
         buf.seek(0)
         return buf
+
+    @classmethod
+    def _group_by_category(cls, products_with_drafts: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for item in products_with_drafts:
+            cat = getattr(item.get("product"), "category", None) or item.get("category") or "General"
+            grouped.setdefault(cat, []).append(item)
+        return grouped
+
+    @classmethod
+    def generate_bulk_upload_file(
+        cls,
+        category: str,
+        products_with_drafts: List[Dict[str, Any]]
+    ) -> io.BytesIO:
+        """Fills the official template for one category; there is no substitute layout."""
+        tmpl = cls.find_template(category)
+        if not tmpl:
+            raise MeeshoExportIncomplete(cls._missing_template_problems(category, products_with_drafts))
+        return cls.populate_template(tmpl, products_with_drafts)
+
+    @classmethod
+    def _missing_template_problems(cls, category: str, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Meesho only accepts its own category template, so a category without one can't be exported."""
+        return [{
+            "sku": cls._row_inputs(item)["sku"], "category": category, "field": "Template",
+            "reason": f"no official Meesho template for '{category}'; download it from the supplier panel "
+                      f"(Catalog Upload > Bulk) into docs/meesho/templates",
+            "blocking": True,
+        } for item in items]

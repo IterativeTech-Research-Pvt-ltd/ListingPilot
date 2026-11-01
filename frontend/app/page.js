@@ -5,247 +5,17 @@ import MarketplaceLiveTwinPreview from "./components/MarketplaceLiveTwinPreview"
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000/api/v1";
 
-// ── Fallback Pilot Datasets (Ensures full functionality when offline) ────────
-
-const INITIAL_PILOT_PRODUCTS = [
-  {
-    id: 1,
-    sku: "JBP-101",
-    name: "Hand block print double bedsheet with 2 pillow covers",
-    category: "Bedsheets",
-    brand: "Gulmohar Home",
-    price: 1299,
-    mrp: 1699,
-    stock: 40,
-    image_count: 5,
-    images: [
-      "https://images.unsplash.com/photo-1522771739844-6a9f6d5f14af?w=500&auto=format&fit=crop",
-      "https://images.unsplash.com/photo-1584100936595-c0654b55a2e2?w=500&auto=format&fit=crop"
-    ],
-    attributes: { "Material": "100% cotton", "Size": "90 x 100 in", "Thread count": "180 TC", "Care": "Machine wash cold", "Color": "Indigo Floral" },
-    description: "Authentic Sanganeri block print on premium long-staple cotton bedsheet set.",
-    current_listing: { title: "Hand block bedsheet double", bullets: ["Cotton sheet", "2 pillow covers included"], flags: ["Short title (<60 chars)", "Missing care instructions"] }
-  },
-  {
-    id: 2,
-    sku: "BRS-220",
-    name: "Solid brass diya, set of 2 with engraved floral motif",
-    category: "Pooja items",
-    brand: "Gulmohar Home",
-    price: 749,
-    mrp: 999,
-    stock: 120,
-    image_count: 4,
-    images: [
-      "https://images.unsplash.com/photo-1605371924599-2d0365da1ae0?w=500&auto=format&fit=crop"
-    ],
-    attributes: { "Material": "Solid brass", "Dimensions": "4 x 4 x 2.5 in", "Weight": "380g per pair", "Finish": "Antique gold lacquer" },
-    description: "Handcrafted brass oil lamp duo for pooja altar and festive home decor.",
-    current_listing: { title: "Brass diya pair set", bullets: ["Solid brass", "Set of 2"], flags: ["Missing dimensions in title"] }
-  },
-  {
-    id: 3,
-    sku: "KRT-305",
-    name: "Women's pure chanderi silk straight kurta with gota patti",
-    category: "Kurtas",
-    brand: "Gulmohar Home",
-    price: 1899,
-    mrp: 2499,
-    stock: 25,
-    image_count: 5,
-    images: [
-      "https://images.unsplash.com/photo-1610030469983-98e550d6193c?w=500&auto=format&fit=crop"
-    ],
-    attributes: { "Fabric": "Chanderi silk with cotton lining", "Length": "Calf length (44 in)", "Sleeve": "3/4th sleeve", "Occasion": "Festive / Wedding" },
-    description: "Elegant pastel green chanderi kurta with fine hand-applied gota patti borders.",
-    current_listing: { title: "Chanderi kurta women", bullets: ["Silk kurta"], flags: ["No size guide mentioned"] }
-  },
-  {
-    id: 4,
-    sku: "CER-412",
-    name: "Handmade ceramic indoor planter, 6 inch with drainage hole",
-    category: "Planters",
-    brand: "Gulmohar Home",
-    price: 599,
-    mrp: 799,
-    stock: 65,
-    image_count: 4,
-    images: [
-      "https://images.unsplash.com/photo-1485955900006-10f4d324d411?w=500&auto=format&fit=crop"
-    ],
-    attributes: { "Material": "High-fired ceramic", "Diameter": "6 inches", "Height": "5.5 inches", "Drainage": "Includes silicone plug" },
-    description: "Matte terracotta-glazed planter ideal for succulents, herbs, and indoor plants.",
-    current_listing: { title: "Ceramic pot 6in", bullets: ["Ceramic pot"], flags: ["Banned claim 'best pot' detected"] }
-  },
-  {
-    id: 5,
-    sku: "JUT-501",
-    name: "Handcrafted pure leather embroidered mojari jutti",
-    category: "Ethnic footwear",
-    brand: "Gulmohar Home",
-    price: 1199,
-    mrp: 1599,
-    stock: 35,
-    image_count: 5,
-    images: [
-      "https://images.unsplash.com/photo-1543163521-1bf539c55dd2?w=500&auto=format&fit=crop"
-    ],
-    attributes: { "Upper Material": "Genuine soft leather", "Sole": "Leather with anti-slip rubber heel", "Embroidery": "Resham thread & beads" },
-    description: "Traditional Rajasthani mojari with double-padded memory cushion insole.",
-    current_listing: { title: "Leather jutti ladies", bullets: ["Punjabi jutti", "Leather"], flags: ["Short title"] }
-  },
-  {
-    id: 6,
-    sku: "QLT-602",
-    name: "Jaipuri traditional cotton reversible summer quilt (Dohar)",
-    category: "Quilts",
-    brand: "Gulmohar Home",
-    price: 1599,
-    mrp: 2199,
-    stock: 30,
-    image_count: 5,
-    images: [
-      "https://images.unsplash.com/photo-1584100936595-c0654b55a2e2?w=500&auto=format&fit=crop"
-    ],
-    attributes: { "Fabric": "3-layer 100% mulmul cotton", "Size": "60 x 90 in (Single)", "Weight": "850g", "Care": "Gentle cycle" },
-    description: "Ultra-breathable 3-layer Jaipuri mulmul dohar with screen floral prints on both sides.",
-    current_listing: { title: "Jaipuri dohar quilt", bullets: ["Cotton dohar"], flags: [] }
-  }
-];
-
-const INITIAL_PILOT_DRAFTS = [
-  {
-    id: 101,
-    product_id: 1,
-    marketplace: "amazon",
-    title: "Gulmohar Home 100% Pure Cotton Double Bedsheet with 2 Pillow Covers (90 x 100 Inch, 180 TC, Indigo Floral)",
-    bullets: [
-      "PREMIUM 100% NATURAL COTTON: Woven from pure breathable cotton yarns for year-round cool comfort and skin-friendly softness.",
-      "GENEROUS KING/DOUBLE DIMENSIONS: Bedsheet measures 90 x 100 inches (228 x 254 cm) with 2 matching pillow covers (18 x 28 inches).",
-      "AUTHENTIC SANGANERI HAND BLOCK CRAFT: Traditional artisan block print dyed using fade-resistant colorfast reactive dyes.",
-      "DURABLE 180 THREAD COUNT: Balanced weave provides optimum breathability, tear resistance, and smooth drape across mattresses.",
-      "EFFORTLESS CARE INSTRUCTIONS: Machine wash cold on gentle cycle; tumble dry low or line dry in shade; warm iron as needed."
-    ],
-    description: "Elevate your bedroom with the artisanal charm of the Gulmohar Home Hand Block Print Double Bedsheet Set. Expertly crafted in Rajasthan from 100% pure long-staple cotton, this bedsheet combines heritage craftsmanship with contemporary Indian aesthetics. Each set includes one large 90 x 100 inch bedsheet suitable for double and queen mattresses, paired with two coordinated pillow covers with envelope flap closure. Breathable, sweat-wicking, and pre-washed for shrink resistance.",
-    keywords: ["cotton bedsheet", "hand block print", "double bedsheet with pillow covers", "jaipuri bedsheet", "sanganeri print", "gulmohar home"],
-    status: "draft",
-    is_approved: false,
-    external_listing_id: null,
-    rule_results: {
-      score: 24,
-      max_score: 25,
-      quality_rating: "Excellent",
-      has_errors: false,
-      checks: [
-        { rule: "Brand in Title (AMZ-TIT-1)", pass: true, detail: "Starts with 'Gulmohar Home'" },
-        { rule: "Title Character Length (AMZ-TIT-2)", pass: true, detail: "107 chars (optimal 80-150)" },
-        { rule: "5 Complete Bullet Points (AMZ-BUL-1)", pass: true, detail: "Exactly 5 structured bullets present" },
-        { rule: "Banned Claims & Superlatives (AMZ-POL-1)", pass: true, detail: "No forbidden words ('best', 'cheapest', 'guaranteed')" },
-        { rule: "Mandatory Category Attributes (CAT-RUL-1)", pass: true, detail: "Material, Size, Care fully specified" },
-        { rule: "Minimum Image Count Check (AMZ-IMG-1)", pass: true, detail: "5 high-res photos available (min 3)" }
-      ]
-    }
-  },
-  {
-    id: 102,
-    product_id: 2,
-    marketplace: "amazon",
-    title: "Gulmohar Home Solid Brass Diya Set of 2 with Engraved Floral Base (Antique Gold, 4 x 4 x 2.5 Inch)",
-    bullets: [
-      "GENUINE SOLID BRASS CONSTRUCTION: Hand-cast from virgin brass alloy with heavy base to prevent accidental tipping during aarti.",
-      "INTRICATE FLORAL MOTIF ENGRAVING: Masterfully carved petals along the rim allow smooth cotton wick placement and even oil burning.",
-      "ANTIQUE GOLD PROTECTIVE LACQUER: Sealed with heat-resistant lacquer to resist tarnish, finger smudges, and soot discoloration.",
-      "IDEAL FOR POOJA & FESTIVE OCCASIONS: Perfect centerpiece for Diwali, daily mandir pooja, Navratri celebrations, and housewarming gifts.",
-      "EASY MAINTENANCE & CLEANING: Simply wipe with a soft dry cloth or brass polish (Pitambari); avoid harsh scouring pads."
-    ],
-    description: "Bring spiritual warmth and timeless Indian tradition into your sacred space with the Gulmohar Home Solid Brass Diya Duo. Handcrafted by generational metal artisans in Moradabad, each diya features an ornate flared petal design resting on a stable pedestal. Designed for both sesame oil and pure ghee wicks, these brass lamps burn clean and steady.",
-    keywords: ["brass diya", "pooja items for home", "diwali oil lamp", "solid brass diya set", "mandir pooja accessories"],
-    status: "approved",
-    is_approved: true,
-    external_listing_id: "B09X8102AMZ",
-    rule_results: {
-      score: 25,
-      max_score: 25,
-      quality_rating: "Excellent",
-      has_errors: false,
-      checks: [
-        { rule: "Brand in Title (AMZ-TIT-1)", pass: true, detail: "Starts with 'Gulmohar Home'" },
-        { rule: "Title Character Length (AMZ-TIT-2)", pass: true, detail: "97 chars (optimal)" },
-        { rule: "5 Complete Bullet Points (AMZ-BUL-1)", pass: true, detail: "5 structured bullets present" },
-        { rule: "Banned Claims & Superlatives (AMZ-POL-1)", pass: true, detail: "Clean policy compliance" },
-        { rule: "Mandatory Category Attributes (CAT-RUL-1)", pass: true, detail: "Material, Dimensions, Finish specified" },
-        { rule: "Minimum Image Count Check (AMZ-IMG-1)", pass: true, detail: "4 photos (min 3)" }
-      ]
-    }
-  },
-  {
-    id: 103,
-    product_id: 1,
-    marketplace: "flipkart",
-    title: "Gulmohar Home 100% Cotton Floral Double Bedsheet with 2 Pillow Covers (Indigo)",
-    bullets: [
-      "Fabric: 100% Pure Long-Staple Cotton for cool breathability",
-      "Thread Count: 180 TC durable woven fabric",
-      "Dimensions: Bedsheet 90 x 100 in, Pillow Covers 18 x 28 in",
-      "Sales Package: 1 Double Bedsheet, 2 Pillow Covers"
-    ],
-    description: "Gulmohar Home pure cotton hand block double bedsheet set with matching pillow covers. High colorfastness and machine washable.",
-    keywords: ["flipkart cotton bedsheet", "sanganeri print", "gulmohar home"],
-    status: "approved",
-    is_approved: true,
-    external_listing_id: "LSTBDSHT9827361",
-    rule_results: {
-      score: 24,
-      max_score: 25,
-      quality_rating: "Excellent",
-      has_errors: false,
-      checks: [
-        { rule: "Brand in Title (FK-TIT-1)", pass: true, detail: "Starts with 'Gulmohar Home'" },
-        { rule: "Title Length (FK-TIT-2)", pass: true, detail: "76 chars (optimal <= 120 chars)" },
-        { rule: "Bullet Points (FK-BUL-1)", pass: true, detail: "4 structured bullets compliant" },
-        { rule: "No Prohibited Claims", pass: true, detail: "Clean policy" }
-      ]
-    }
-  },
-  {
-    id: 104,
-    product_id: 1,
-    marketplace: "meesho",
-    title: "Gulmohar Home Cotton Hand Block Double Bedsheet Set",
-    bullets: [
-      "Pure Cotton Soft Fabric",
-      "Size: 90x100 inches with 2 covers",
-      "Fast Colors Machine Washable"
-    ],
-    description: "Gulmohar Home Hand block printed cotton double bedsheet set with 2 pillow covers. High quality pure cotton fabric with vibrant Jaipuri print.",
-    keywords: ["cotton bedsheet", "jaipuri print"],
-    status: "live",
-    is_approved: true,
-    external_listing_id: "MSH-JBP-101",
-    rule_results: {
-      score: 23,
-      max_score: 25,
-      quality_rating: "Excellent",
-      has_errors: false,
-      checks: [
-        { rule: "Title Length (MSH-TIT-1)", pass: true, detail: "51 chars (optimal <= 100)" },
-        { rule: "Plain Text Description (MSH-POL-1)", pass: true, detail: "No HTML tags detected" },
-        { rule: "GST & HSN Ready", pass: true, detail: "Pre-filled in bulk upload sheet" }
-      ]
-    }
-  }
-];
-
 export default function ListingPilotPhase3App() {
   // Navigation
   const [activeTab, setActiveTab] = useState("catalogue"); // "catalogue" | "drafts" | "marketplace" | "reports" | "settings"
 
   // Core Data
-  const [products, setProducts] = useState(INITIAL_PILOT_PRODUCTS);
-  const [drafts, setDrafts] = useState(INITIAL_PILOT_DRAFTS);
+  // Everything shown comes from the backend (Supabase); nothing is pre-filled
+  const [products, setProducts] = useState([]);
+  const [drafts, setDrafts] = useState([]);
   const [selectedProduct, setSelectedProduct] = useState(null); // Active selected product
   const [drawerProduct, setDrawerProduct] = useState(null); // Explicitly controls Slide-Over Inspector Drawer
-  const [selectedDraft, setSelectedDraft] = useState(INITIAL_PILOT_DRAFTS[0]);
+  const [selectedDraft, setSelectedDraft] = useState(null);
 
   // Filters & Search
   const [categories, setCategories] = useState([]);
@@ -293,28 +63,28 @@ export default function ListingPilotPhase3App() {
 
   // KPI & Baseline Metrics
   const [stats, setStats] = useState({
-    total_skus: 59,
-    total_stock: 1420,
-    avg_price: 1250,
-    missing_attributes_count: 4,
-    low_photo_count: 6
+    total_skus: 0,
+    total_stock: 0,
+    avg_price: 0,
+    missing_attributes_count: 0,
+    low_photo_count: 0
   });
 
   const [draftStats, setDraftStats] = useState({
-    total_drafts: 48,
-    draft: 28,
-    approved: 12,
-    live: 8,
-    avg_quality_score: 23.1
+    total_drafts: 0,
+    draft: 0,
+    approved: 0,
+    live: 0,
+    avg_quality_score: 0
   });
 
   const [baselineMetrics, setBaselineMetrics] = useState({
-    coverage_percent: 81.3,
-    first_pass_rate: 88.4,
-    approval_rate: 35.2,
-    rejection_rate: 0.0,
-    time_saved_hours: 38.0,
-    quality_distribution: { Excellent: 34, Good: 10, "Needs Improvement": 4 }
+    coverage_percent: 0,
+    first_pass_rate: 0,
+    approval_rate: 0,
+    rejection_rate: 0,
+    time_saved_hours: 0,
+    quality_distribution: { Excellent: 0, Good: 0, "Needs Improvement": 0 }
   });
 
   // Draft Editor State
@@ -389,10 +159,10 @@ export default function ListingPilotPhase3App() {
     sku: "",
     name: "",
     category: "General",
-    brand: "Gulmohar Home",
+    brand: "",
     mrp: "",
     price: "",
-    stock: "50",
+    stock: "",
     images: "",
     material: "",
     size: "",
@@ -403,7 +173,7 @@ export default function ListingPilotPhase3App() {
   // ── Settings & Administration State (Phase 4: ADM-1 - ADM-4, F10) ─────────
   const [adminActiveSubTab, setAdminActiveSubTab] = useState("brand"); // "brand" | "claims" | "creds" | "health" | "guide"
   const [brandVoice, setBrandVoice] = useState({
-    brand_name: "Gulmohar Home",
+    brand_name: "",
     tone: "Professional, benefit-driven, informative, and engaging",
     target_audience: "Discerning shoppers seeking quality, reliability, and value",
     avoid_claims: "Avoid cheap promotional slang, fake certifications, or unverified claims"
@@ -426,20 +196,8 @@ export default function ListingPilotPhase3App() {
     flipkart_app_secret: "",
     openrouter_api_key: ""
   });
-  const [systemHealth, setSystemHealth] = useState({
-    status: "healthy",
-    phase: 4,
-    system_time: "2026-10-15T00:00:00.000Z",
-    services: {
-      database: { status: "connected", type: "Neon Cloud PostgreSQL (Serverless ep-shy-rain)" },
-      ai_content_engine: { status: "connected", provider: "OpenRouter / Claude" },
-      amazon_sp_api: { status: "connected", mode: "sandbox_stub" },
-      flipkart_seller_api: { status: "connected", mode: "sandbox_stub" },
-      meesho_exporter: { status: "ready", mode: "excel_bulk_generator" }
-    },
-    last_sync: { amazon: "Just now", flipkart: "Just now", meesho: "Just now" },
-    active_alerts: []
-  });
+  // Unknown until the server answers: nothing is shown as connected before then
+  const [systemHealth, setSystemHealth] = useState(null);
   const [isSavingBrandVoice, setIsSavingBrandVoice] = useState(false);
   const [isSavingBannedClaims, setIsSavingBannedClaims] = useState(false);
   const [isSavingCreds, setIsSavingCreds] = useState(false);
@@ -503,7 +261,7 @@ export default function ListingPilotPhase3App() {
       setEditProductForm({
         name: target.name || "",
         category: target.category || "General",
-        brand: target.brand || "Gulmohar Home",
+        brand: target.brand || "",
         price: target.price ?? "",
         mrp: target.mrp ?? "",
         stock: target.stock ?? "",
@@ -523,55 +281,13 @@ export default function ListingPilotPhase3App() {
       if (match) {
         setSelectedDraft(match);
       } else {
-        // Synthesize dynamic draft preview for the chosen marketplace
-        const mp = targetMarketplace;
-        const p = selectedProduct;
-        const brand = p.brand || "Gulmohar Home";
-        const mat = p.attributes?.Material || p.attributes?.Fabric || "Handcrafted";
-        
-        let title = `${brand} ${p.name}`;
-        if (mp === "meesho") {
-          title = `${brand} ${p.name}`.slice(0, 95);
-        } else if (mp === "flipkart") {
-          title = `${brand} ${p.name} (${mat})`.slice(0, 115);
-        } else {
-          title = `${brand} ${p.name} (${mat}, Premium Quality)`.slice(0, 195);
-        }
-
-        const previewDraft = {
-          id: Date.now(),
-          product_id: p.id,
-          marketplace: mp,
-          title,
-          bullets: [
-            `PREMIUM CRAFTSMANSHIP: Handcrafted with pride by ${brand} artisans.`,
-            `MATERIALS & SPECS: ${Object.entries(p.attributes || {}).map(([k, v]) => `${k}: ${v}`).join(", ") || "Pure organic fabrics and metals."}`,
-            `VERSATILE UTILITY: Suitable for daily use or festive celebrations.`,
-            `CARE INSTRUCTIONS: Follow label directions for long-lasting vibrant appeal.`
-          ],
-          description: `Experience the excellence of ${brand} with our ${p.name}. Direct from regional artisan clusters.`,
-          keywords: [p.category.toLowerCase(), brand.toLowerCase(), "handcrafted"],
-          status: "draft",
-          is_approved: false,
-          external_listing_id: null,
-          rule_results: {
-            score: 22,
-            max_score: 25,
-            quality_rating: "Excellent",
-            has_errors: false,
-            checks: [
-              { rule: `${mp.toUpperCase()} Title Length Check`, pass: true, detail: "Within marketplace limit" },
-              { rule: "Banned Claims Check", pass: true, detail: "No forbidden superlatives" },
-              { rule: "Category Attributes", pass: true, detail: "Mandatory specs verified" }
-            ]
-          }
-        };
-        setSelectedDraft(previewDraft);
+        // No draft for this marketplace yet; the editor stays empty until one is generated
+        setSelectedDraft(null);
       }
     }
   }, [selectedProduct, targetMarketplace, drafts]);
 
-  // ── Initial Fetch from Backend (with fallback) ────────────────────────────
+  // ── Initial Fetch from Backend ────────────────────────────────────────────
 
   const fetchAllData = async () => {
     try {
@@ -586,15 +302,20 @@ export default function ListingPilotPhase3App() {
         fetch(`${API_BASE}/drafts/meesho/templates`).then(r => r.ok ? r.json() : null).catch(() => null)
       ]);
 
-      if (prodRes && prodRes.items && prodRes.items.length > 0) {
-        console.log(`[ListingPilot] Successfully loaded ${prodRes.items.length} products from database.`);
+      if (!prodRes) {
+        showToast("Backend Unreachable", "Could not load the catalogue from the server. Check that the backend is running and connected to the database.", "error");
+      }
+      if (prodRes && Array.isArray(prodRes.items)) {
         setProducts(prodRes.items);
       }
       if (catRes && Array.isArray(catRes)) setCategories(catRes);
       if (statsRes) setStats(statsRes);
-      if (draftRes && draftRes.length > 0) {
+      if (Array.isArray(draftRes)) {
         setDrafts(draftRes);
-        setSelectedDraft(draftRes[0]);
+        // Keep the open draft; otherwise open one for the selected marketplace, never another channel's
+        setSelectedDraft(prev =>
+          draftRes.find(d => d.id === prev?.id) || draftRes.find(d => d.marketplace === targetMarketplace) || null
+        );
       }
       if (meeshoTmplRes && meeshoTmplRes.templates) {
         setMeeshoTemplates(meeshoTmplRes.templates);
@@ -609,16 +330,24 @@ export default function ListingPilotPhase3App() {
       }
       if (baselineRes) {
         setBaselineMetrics({
-          coverage_percent: baselineRes.overview?.coverage_percent || 81.3,
-          first_pass_rate: baselineRes.quality?.first_pass_rate || 88.4,
-          approval_rate: baselineRes.quality?.approval_rate || 35.2,
-          rejection_rate: baselineRes.quality?.rejection_rate || 0.0,
-          time_saved_hours: Math.round((baselineRes.overview?.total_drafts || 48) * 0.75 * 10) / 10,
-          quality_distribution: baselineRes.quality?.score_distribution || { Excellent: 34, Good: 10, "Needs Improvement": 4 }
+          coverage_percent: baselineRes.overview?.coverage_percent ?? 0,
+          first_pass_rate: baselineRes.quality?.first_pass_rate ?? 0,
+          approval_rate: baselineRes.quality?.approval_rate ?? 0,
+          rejection_rate: baselineRes.quality?.rejection_rate ?? 0,
+          time_saved_hours: Math.round((baselineRes.overview?.total_drafts ?? 0) * 0.75 * 10) / 10,
+          quality_distribution: baselineRes.quality?.score_distribution ?? { Excellent: 0, Good: 0, "Needs Improvement": 0 }
+        });
+        setDraftStats({
+          total_drafts: baselineRes.overview?.total_drafts ?? 0,
+          draft: baselineRes.pipeline?.draft ?? 0,
+          approved: baselineRes.pipeline?.approved ?? 0,
+          live: baselineRes.pipeline?.live ?? 0,
+          avg_quality_score: baselineRes.quality?.avg_score ?? 0
         });
       }
     } catch (err) {
-      console.warn("Backend API sync: operating with cached pilot data", err);
+      console.warn("Backend API sync failed", err);
+      showToast("Backend Unreachable", "Could not load data from the server.", "error");
     }
   };
 
@@ -668,26 +397,8 @@ export default function ListingPilotPhase3App() {
     try {
       await persistDraftEdits();
       showToast("Draft Saved & Re-evaluated", `Rules verified for ${selectedDraft.marketplace.toUpperCase()}.`, "success");
-    } catch {
-      // Offline local simulation
-      const hasErrors = payload.title.length < 30 || /best|cheapest|guaranteed/i.test(payload.title);
-      const simulated = {
-        ...selectedDraft,
-        title: payload.title,
-        bullets: payload.bullets,
-        description: payload.description,
-        keywords: payload.keywords,
-        status: "draft",
-        rule_results: {
-          ...selectedDraft.rule_results,
-          score: hasErrors ? 14 : 24,
-          quality_rating: hasErrors ? "Needs Improvement" : "Excellent",
-          has_errors: hasErrors
-        }
-      };
-      setDrafts(prev => prev.map(d => d.id === simulated.id ? simulated : d));
-      setSelectedDraft(simulated);
-      showToast("Draft Updated", `Rule engine re-checked listing for ${selectedDraft.marketplace.toUpperCase()}.`, "success");
+    } catch (err) {
+      showToast("Not Saved", `The server didn't save the draft; your edits are still in the editor. ${err?.message || ""}`.trim(), "error");
     } finally {
       setIsSavingEdit(false);
     }
@@ -730,11 +441,8 @@ export default function ListingPilotPhase3App() {
       } else {
         throw new Error("Approve API failed");
       }
-    } catch {
-      const approved = { ...selectedDraft, status: "approved", is_approved: true };
-      setDrafts(prev => prev.map(d => d.id === approved.id ? approved : d));
-      setSelectedDraft(approved);
-      showToast("Draft Approved! 🎉", `Status updated to Approved for ${selectedDraft.marketplace.toUpperCase()}.`, "success");
+    } catch (err) {
+      showToast("Not Approved", `The server didn't approve the draft. ${err?.message || ""}`.trim(), "error");
     } finally {
       setIsApproving(false);
     }
@@ -754,17 +462,15 @@ export default function ListingPilotPhase3App() {
         const rejected = await res.json();
         setDrafts(prev => prev.map(d => d.id === rejected.id ? rejected : d));
         setSelectedDraft(rejected);
+        showToast("Draft Marked as Rejected", "Item logged with rejection reason for audit.", "info");
       } else {
         throw new Error("Reject API failed");
       }
-    } catch {
-      const rejected = { ...selectedDraft, status: "rejected", is_approved: false, rejection_reason: rejectReason };
-      setDrafts(prev => prev.map(d => d.id === rejected.id ? rejected : d));
-      setSelectedDraft(rejected);
+    } catch (err) {
+      showToast("Not Rejected", `The server didn't record the rejection. ${err?.message || ""}`.trim(), "error");
     } finally {
       setShowRejectModal(false);
       setRejectReason("");
-      showToast("Draft Marked as Rejected", "Item logged with rejection reason for audit.", "info");
     }
   };
 
@@ -791,13 +497,8 @@ export default function ListingPilotPhase3App() {
       } else {
         throw new Error("Upload failed");
       }
-    } catch {
-      // Local fallback object preview
-      const localUrl = URL.createObjectURL(file);
-      const currentImgs = Array.isArray(target.images) ? [...target.images] : [];
-      const updatedImages = [...currentImgs, localUrl];
-      await saveProductImageChanges(updatedImages);
-      showToast("Photo Added (Preview)", `Attached ${file.name}.`, "info");
+    } catch (err) {
+      showToast("Photo Not Uploaded", `The photo wasn't saved to the product. ${err?.message || ""}`.trim(), "error");
     } finally {
       setIsUploadingPhoto(false);
       if (e.target) e.target.value = "";
@@ -894,14 +595,13 @@ export default function ListingPilotPhase3App() {
         })
       });
       if (res.ok) {
-        showToast("Product Updated in Neon DB! 💾", `Saved changes for ${updatedProd.sku}.`, "success");
+        showToast("Product Updated! 💾", `Saved changes for ${updatedProd.sku}.`, "success");
         setIsEditingProduct(false);
       } else {
         throw new Error("Product update failed");
       }
-    } catch {
-      showToast("Saved Locally", `Product ${updatedProd.sku} updated in session.`, "info");
-      setIsEditingProduct(false);
+    } catch (err) {
+      showToast("Product Not Saved", `The server didn't save the changes; they're still in the form. ${err?.message || ""}`.trim(), "error");
     } finally {
       setIsSavingProductDetails(false);
     }
@@ -948,67 +648,8 @@ export default function ListingPilotPhase3App() {
       } else {
         throw new Error("Generate failed");
       }
-    } catch {
-      // Local category-agnostic fallback simulation
-      const mp = targetMarketplace;
-      const p = targetProd;
-      const brand = p.brand || "Gulmohar Home";
-      const cat = p.category || "General";
-      const mat = p.attributes?.Material || p.attributes?.Fabric || p.attributes?.Composition || "";
-      const size = p.attributes?.Size || p.attributes?.Dimensions || "";
-      
-      let titleParts = [brand, p.name];
-      if (mat) titleParts.push(mat);
-      if (size) titleParts.push(size);
-      
-      let title = titleParts.filter(Boolean).join(" - ");
-      const maxLen = mp === "meesho" ? 95 : mp === "flipkart" ? 115 : 195;
-      if (title.length > maxLen) title = title.slice(0, maxLen - 3) + "...";
-
-      const mockBullets = [
-        `PREMIUM QUALITY & RELIABILITY: Engineered by ${brand} for superior durability and high-performance satisfaction.`,
-        `TECHNICAL SPECIFICATIONS: ${Object.entries(p.attributes || {}).map(([k, v]) => `${k}: ${v}`).join(", ") || `Certified high-grade ${cat.toLowerCase()} built to rigorous standards.`}`,
-        `PRACTICAL UTILITY: Thoughtfully designed ${size ? `(${size})` : ''} for seamless daily convenience and versatile use.`,
-        `SECURE PACKAGING: Factory-sealed in protective packaging ensuring pristine condition upon delivery.`,
-        `MAINTENANCE & CARE: Follow manufacturer instructions for long-lasting peak performance.`
-      ];
-
-      const mockDesc = `Experience the unmatched quality of ${brand}'s ${p.name}. Specially designed in the ${cat} category, this item delivers exceptional durability, smart utility, and superior value.`;
-
-      const mockGenerated = {
-        id: selectedDraft ? selectedDraft.id : Date.now(),
-        product_id: p.id,
-        marketplace: mp,
-        title,
-        bullets: mockBullets,
-        description: mockDesc,
-        keywords: [cat.toLowerCase(), p.name.toLowerCase().slice(0, 30), `${brand.toLowerCase()} ${cat.toLowerCase()}`, "high quality", "durable"],
-        status: "draft",
-        is_approved: false,
-        external_listing_id: null,
-        rule_results: {
-          score: 24,
-          max_score: 25,
-          quality_rating: "Excellent",
-          has_errors: false,
-          checks: [
-            { rule: `${mp.toUpperCase()} Title Length`, pass: true, detail: `${title.length} chars (Optimal limit)` },
-            { rule: "Banned Claims Check", pass: true, detail: "Zero forbidden promotional claims" },
-            { rule: "Mandatory Category Specs", pass: true, detail: "Product attributes specified" }
-          ]
-        }
-      };
-
-      setDrafts(prev => {
-        const filtered = prev.filter(d => !(d.product_id === p.id && d.marketplace === mp));
-        return [mockGenerated, ...filtered];
-      });
-      setSelectedDraft(mockGenerated);
-      setEditTitle(mockGenerated.title);
-      setEditBullets(mockGenerated.bullets);
-      setEditDescription(mockGenerated.description);
-      setEditKeywords(mockGenerated.keywords.join(", "));
-      showToast("AI Listing Generated! ✨", `Listing generated for ${mp.toUpperCase()}.`, "success");
+    } catch (err) {
+      showToast("Generation Failed", `No ${targetMarketplace.toUpperCase()} copy was generated: the server request failed. Nothing was saved.`, "error");
     } finally {
       setIsRegenerating(false);
     }
@@ -1025,54 +666,37 @@ export default function ListingPilotPhase3App() {
       return;
     }
 
+    if (marketplace === "meesho") {
+      // Meesho has no listing API: the listing goes live only through the supplier panel upload
+      showToast("Use the Meesho Sheet", "Meesho listings are uploaded at supplier.meesho.com. Download the Meesho sheet from the Multi-Channel Hub and upload it there.", "info");
+      return;
+    }
+
     setIsPublishing(true);
     try {
       const res = await fetch(`${API_BASE}/drafts/${draftToPub.id}/publish`, {
         method: "POST"
       });
-
-      if (res.ok) {
-        const data = await res.json();
-        const publishedDraft = data.draft;
-        setDrafts(prev => prev.map(d => d.id === publishedDraft.id ? publishedDraft : d));
-        if (selectedDraft?.id === publishedDraft.id) setSelectedDraft(publishedDraft);
-
-        if (marketplace === "amazon") {
-          showToast("Published to Amazon! 🚀", `Assigned ASIN: ${publishedDraft.external_listing_id}. Status: LIVE.`, "success");
-        } else if (marketplace === "flipkart") {
-          showToast("Published to Flipkart! 🚀", `Assigned FSN: ${publishedDraft.external_listing_id}. Status: LIVE.`, "success");
-        } else {
-          showToast("Packaged for Meesho! 📦", "Listing packaged and certified for bulk upload sheet.", "success");
-        }
-      } else {
-        throw new Error("Publish API error");
-      }
-    } catch {
-      // Local fallback simulation
-      let mockId = "";
-      if (marketplace === "amazon") {
-        mockId = "B09X" + Math.floor(10000 + Math.random() * 90000);
-      } else if (marketplace === "flipkart") {
-        mockId = "LST" + Math.random().toString(36).substring(2, 15).toUpperCase();
-      } else {
-        mockId = "MSH-" + (selectedProduct?.sku || "SKU101");
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        const detail = data && data.detail;
+        throw new Error(typeof detail === "string" ? detail : `Publish failed (HTTP ${res.status})`);
       }
 
-      const published = {
-        ...draftToPub,
-        status: "live",
-        external_listing_id: mockId
-      };
-      setDrafts(prev => prev.map(d => d.id === published.id ? published : d));
-      if (selectedDraft?.id === published.id) setSelectedDraft(published);
-
-      if (marketplace === "amazon") {
-        showToast("Published to Amazon! 🚀", `Simulated ASIN ${mockId} created. Status: LIVE.`, "success");
-      } else if (marketplace === "flipkart") {
-        showToast("Published to Flipkart! 🚀", `Simulated FSN ${mockId} created. Status: LIVE.`, "success");
+      const publishedDraft = data.draft;
+      setDrafts(prev => prev.map(d => d.id === publishedDraft.id ? publishedDraft : d));
+      if (selectedDraft?.id === publishedDraft.id) setSelectedDraft(publishedDraft);
+      const mpName = marketplace === "amazon" ? "Amazon" : "Flipkart";
+      if (publishedDraft.status === "live") {
+        const idLabel = marketplace === "amazon" ? "ASIN" : "FSN";
+        const idText = publishedDraft.external_listing_id ? ` ${idLabel}: ${publishedDraft.external_listing_id}.` : "";
+        showToast(`Published to ${mpName}`, `${mpName} accepted the listing.${idText}`, "success");
       } else {
-        showToast("Meesho Ready! 📦", "Catalog item certified for Meesho bulk sheet.", "success");
+        showToast(`${mpName} Rejected the Listing`, publishedDraft.rejection_reason || "The marketplace did not accept it.", "error");
       }
+    } catch (err) {
+      // Nothing changes locally: the draft keeps its real status
+      showToast("Publish Failed", err.message || "The publish request failed. Nothing was published.", "error");
     } finally {
       setIsPublishing(false);
     }
@@ -1100,6 +724,35 @@ export default function ListingPilotPhase3App() {
         const problems = (detail && detail.problems) || [];
         const sample = problems.slice(0, 3).map(p => `${p.sku}: ${p.field} (${p.reason})`).join("; ");
         const more = problems.length > 3 ? `; +${problems.length - 3} more` : "";
+        if (res.status === 422) {
+          // Hand the seller the gaps as a sheet they can fill and re-import in the Catalogue tab
+          const fillParams = isAll ? "" : `?category=${encodeURIComponent(category)}`;
+          const fillRes = await fetch(`${API_BASE}/drafts/meesho/fill-in-sheet${fillParams}`);
+          if (fillRes.ok) {
+            const fillUrl = window.URL.createObjectURL(await fillRes.blob());
+            const link = document.createElement("a");
+            link.href = fillUrl;
+            link.download = `Meesho_fill_in_${isAll ? "All" : category}.xlsx`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            window.URL.revokeObjectURL(fillUrl);
+            // Some blockers can't be fixed by filling cells; say which, so the sheet isn't the only hint
+            const noTemplate = [...new Set(problems.filter(p => p.blocking && p.field === "Template").map(p => p.category))];
+            const sameName = problems.filter(p => p.blocking && p.field === "Product Name").length;
+            const notInSheet = [
+              noTemplate.length ? `no official Meesho template for ${noTemplate.join(", ")} (download it from the supplier panel)` : "",
+              sameName ? `${sameName} SKU(s) share a Product Name (give each draft its own title)` : ""
+            ].filter(Boolean).join("; ");
+            showToast(
+              "Meesho Export Blocked",
+              `${problems.length} problem(s). Downloaded a fill-in sheet: complete the highlighted cells and import it in the Catalogue tab, then export again.` +
+                (notInSheet ? ` Not fixable in the sheet: ${notInSheet}.` : ""),
+              "error"
+            );
+            return;
+          }
+        }
         throw new Error(
           (detail && detail.message ? `${detail.message} ${sample}${more}` : null) ||
           (typeof detail === "string" ? detail : `Meesho export failed (HTTP ${res.status})`)
@@ -1225,68 +878,7 @@ export default function ListingPilotPhase3App() {
         fetchAllData();
         return;
       }
-      // Local batch simulation fallback
-      const targetProducts = batchCategory === "All" 
-        ? products 
-        : products.filter(p => p.category === batchCategory);
-
-      const targetMps = batchMarketplace === "all" 
-        ? ["amazon", "flipkart", "meesho"] 
-        : [batchMarketplace];
-
-      const newDrafts = [];
-      let draftIdCounter = Date.now();
-
-      targetProducts.forEach(p => {
-        targetMps.forEach(mp => {
-          newDrafts.push({
-            id: draftIdCounter++,
-            product_id: p.id,
-            marketplace: mp,
-            title: mp === "meesho" 
-              ? `Gulmohar Home ${p.name}`.slice(0, 95)
-              : mp === "flipkart"
-              ? `Gulmohar Home ${p.name} (${p.category})`.slice(0, 115)
-              : `Gulmohar Home ${p.name} - ${p.category} (${p.brand})`,
-            bullets: [
-              `AUTHENTIC HANDCRAFTED DESIGN: Specially curated for Gulmohar Home connoisseurs.`,
-              `PREMIUM MATERIALS: ${Object.entries(p.attributes || {}).map(([k, v]) => `${k}: ${v}`).join(", ") || "Pure organic fabrics and metals."}`,
-              `OPTIMAL DIMENSIONS: Designed to fit standard Indian households and altars.`,
-              `CARE RECOMMENDATIONS: Spot clean or gentle wash for lasting luster and vibrancy.`
-            ],
-            description: `Discover artisanal quality with Gulmohar Home's ${p.name}. Direct from artisan clusters.`,
-            keywords: [p.category.toLowerCase(), p.brand.toLowerCase(), "handcrafted"],
-            status: "draft",
-            is_approved: false,
-            external_listing_id: null,
-            rule_results: {
-              score: 24,
-              max_score: 25,
-              quality_rating: "Excellent",
-              has_errors: false,
-              checks: [
-                { rule: `${mp.toUpperCase()} Schema Check`, pass: true, detail: "Compliant" },
-                { rule: "Banned Claims Check", pass: true, detail: "Passed" }
-              ]
-            }
-          });
-        });
-      });
-
-      setDrafts(prev => {
-        const targetMpSet = new Set(targetMps);
-        const targetProdIds = new Set(targetProducts.map(p => p.id));
-        const retained = prev.filter(d => !(targetProdIds.has(d.product_id) && targetMpSet.has(d.marketplace)));
-        return [...newDrafts, ...retained];
-      });
-      if (newDrafts.length > 0) {
-        setSelectedDraft(newDrafts[0]);
-      }
-      showToast(
-        "Batch Generated", 
-        `${newDrafts.length} AI drafts ready across ${batchMarketplace === "all" ? "All Channels" : batchMarketplace.toUpperCase()}.`, 
-        "success"
-      );
+      showToast("Batch Generation Failed", "The server request failed, so no drafts were generated or saved.", "error");
     } finally {
       batchAbortRef.current = null;
       setIsBatchRunning(false);
@@ -1312,18 +904,7 @@ export default function ListingPilotPhase3App() {
       window.URL.revokeObjectURL(url);
       showToast("Template Downloaded! 📋", "Master Catalogue Excel template saved to downloads.", "success");
     } catch (err) {
-      console.warn("Backend template download failed, generating client fallback template:", err);
-      const headers = ["sku", "name", "category", "brand", "price", "mrp", "stock", "material", "size", "care", "image_url_1", "description"];
-      const sampleRow = ["SAMPLE-001", "Handcrafted Cotton Bedsheet", "Bedsheets", "Gulmohar Home", "1499", "1999", "25", "100% Pure Cotton", "Double King", "Gentle machine wash", "https://images.unsplash.com/photo-1522771739844-6a9f6d5f14af", "Artisanal hand block printed bedsheet"];
-      const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), sampleRow.join(",")].join("\n");
-      const encodedUri = encodeURI(csvContent);
-      const link = document.createElement("a");
-      link.setAttribute("href", encodedUri);
-      link.setAttribute("download", "ListingPilot_Master_Catalogue_Template.csv");
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      showToast("Template Ready (CSV) 📋", "Saved Master Catalogue template directly.", "info");
+      showToast("Template Download Failed", `The server didn't return the template. ${err?.message || ""}`.trim(), "error");
     }
   };
 
@@ -1348,50 +929,16 @@ export default function ListingPilotPhase3App() {
       window.URL.revokeObjectURL(url);
       showToast("Export Ready! 📤", `Downloaded Master Catalogue in ${format.toUpperCase()} format.`, "success");
     } catch (err) {
-      console.warn("Backend export failed, generating client fallback export:", err);
-      const filtered = products.filter(p => {
-        const matchesCat = selectedCat === "All" || (p.category && p.category.toLowerCase() === selectedCat.toLowerCase());
-        const matchesQuery = !searchQuery || 
-          p.name?.toLowerCase().includes(searchQuery.toLowerCase()) || 
-          p.sku?.toLowerCase().includes(searchQuery.toLowerCase());
-        return matchesCat && matchesQuery;
-      });
-
-      if (format === "json") {
-        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(filtered, null, 2));
-        const dl = document.createElement("a");
-        dl.setAttribute("href", dataStr);
-        dl.setAttribute("download", `ListingPilot_Master_Catalogue_${new Date().toISOString().slice(0, 10)}.json`);
-        document.body.appendChild(dl);
-        dl.click();
-        document.body.removeChild(dl);
-      } else {
-        const headers = ["sku", "name", "category", "brand", "price", "mrp", "stock", "material", "care", "image_count"];
-        const rows = filtered.map(p => [
-          `"${p.sku || ""}"`,
-          `"${(p.name || "").replace(/"/g, '""')}"`,
-          `"${p.category || ""}"`,
-          `"${p.brand || ""}"`,
-          p.price || 0,
-          p.mrp || 0,
-          p.stock || 0,
-          `"${(p.attributes?.Material || p.attributes?.Fabric || "").replace(/"/g, '""')}"`,
-          `"${(p.attributes?.Care || "").replace(/"/g, '""')}"`,
-          p.image_count || (p.images?.length || 1)
-        ]);
-        const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map(e => e.join(","))].join("\n");
-        const encodedUri = encodeURI(csvContent);
-        const link = document.createElement("a");
-        link.setAttribute("href", encodedUri);
-        link.setAttribute("download", `ListingPilot_Master_Catalogue_${new Date().toISOString().slice(0, 10)}.csv`);
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-      }
-      showToast("Export Ready (Local Data) 📤", `Exported ${filtered.length} SKUs in ${format.toUpperCase()} format.`, "success");
+      showToast("Export Failed", `The server didn't export the catalogue. ${err?.message || ""}`.trim(), "error");
     } finally {
       setExportLoading(false);
     }
+  };
+
+  // The twin preview publishes on its own; keep the dashboard's copy of the draft in step
+  const handleTwinPublished = (published) => {
+    setDrafts(prev => prev.map(d => d.id === published.id ? published : d));
+    if (selectedDraft?.id === published.id) setSelectedDraft(published);
   };
 
   const handleFileUpload = async (e) => {
@@ -1407,15 +954,27 @@ export default function ListingPilotPhase3App() {
         method: "POST",
         body: formData
       });
+      const data = await res.json().catch(() => null);
       if (res.ok) {
-        const data = await res.json();
-        showToast("Catalogue Imported! 📁", `Imported ${data.imported_count || 0} SKUs.`, "success");
+        const created = data?.imported_count || 0;
+        const updated = data?.updated_count || 0;
+        const failed = data?.failed_count || 0;
+        const counts = `${created} created, ${updated} updated, ${failed} row(s) failed, ${data?.warnings_count || 0} warning(s).`;
+        const firstErrors = (data?.errors || []).slice(0, 3).map(er => er.message).join(" ");
+        if (created + updated === 0) {
+          showToast("Nothing Imported", `${counts} ${firstErrors}`.trim(), "error");
+        } else if (failed > 0) {
+          showToast("Imported With Errors", `${counts} ${firstErrors}`.trim(), "warn");
+        } else {
+          showToast("Catalogue Imported 📁", counts, "success");
+        }
         fetchAllData();
       } else {
-        throw new Error("Import failed");
+        const detail = data && data.detail;
+        throw new Error(typeof detail === "string" ? detail : `HTTP ${res.status}`);
       }
-    } catch {
-      showToast("Import Simulated", `File "${file.name}" validated against Master Catalogue schema.`, "info");
+    } catch (err) {
+      showToast("Import Failed", `Nothing was imported from "${file.name}". ${err?.message || ""}`.trim(), "error");
     } finally {
       setIsImporting(false);
       setShowImportModal(false);
@@ -1423,25 +982,26 @@ export default function ListingPilotPhase3App() {
   };
 
   const handleAddProduct = async () => {
-    if (!newForm.sku.trim() || !newForm.name.trim()) {
-      showToast("Required Fields Missing", "Please provide at least SKU and Product Name.", "warn");
+    if (!newForm.sku.trim() || !newForm.name.trim() || !(parseFloat(newForm.price) > 0)) {
+      showToast("Required Fields Missing", "Please provide SKU, Product Name and a selling price.", "warn");
       return;
     }
+    // Only what the seller typed is saved; blank fields stay blank (no placeholder values)
+    const attributes = {};
+    if (newForm.material.trim()) attributes.Material = newForm.material.trim();
+    if (newForm.size.trim()) attributes.Size = newForm.size.trim();
+    if (newForm.care.trim()) attributes.Care = newForm.care.trim();
 
     const payload = {
       sku: newForm.sku.trim().toUpperCase(),
       name: newForm.name.trim(),
       category: newForm.category.trim() || "General",
-      brand: newForm.brand.trim() || "Gulmohar Home",
-      price: parseFloat(newForm.price) || 999,
-      mrp: newForm.mrp ? parseFloat(newForm.mrp) : (parseFloat(newForm.price) || 999) * 1.25,
-      stock: parseInt(newForm.stock) || 50,
-      images: newForm.images.trim() ? [newForm.images.trim()] : ["https://images.unsplash.com/photo-1522771739844-6a9f6d5f14af?w=500&auto=format&fit=crop"],
-      attributes: {
-        Material: newForm.material || "Quality Material",
-        Size: newForm.size || "Standard",
-        Care: newForm.care || "Handle with care"
-      },
+      brand: newForm.brand.trim() || brandVoice.brand_name || undefined,
+      price: parseFloat(newForm.price),
+      mrp: newForm.mrp ? parseFloat(newForm.mrp) : null,
+      stock: parseInt(newForm.stock) || 0,
+      images: newForm.images.trim() ? [newForm.images.trim()] : [],
+      attributes,
       description: newForm.description || ""
     };
 
@@ -1456,21 +1016,12 @@ export default function ListingPilotPhase3App() {
         setProducts(prev => [created, ...prev]);
         setSelectedProduct(created);
         setShowAddModal(false);
-        showToast("Product Created in Neon DB! 🚀", `SKU ${created.sku} saved to central truth.`, "success");
+        showToast("Product Created! 🚀", `SKU ${created.sku} saved to central truth.`, "success");
       } else {
-        throw new Error("Failed to save product to Neon DB");
+        throw new Error("Failed to save product to the database");
       }
-    } catch {
-      const newProd = {
-        id: Date.now(),
-        ...payload,
-        image_count: payload.images.length,
-        current_listing: { title: payload.name, bullets: [], flags: [] }
-      };
-      setProducts(prev => [newProd, ...prev]);
-      setSelectedProduct(newProd);
-      setShowAddModal(false);
-      showToast("Product Recorded Locally", `SKU ${newProd.sku} recorded.`, "info");
+    } catch (err) {
+      showToast("Product Not Created", `The server didn't save SKU ${payload.sku}. ${err?.message || ""}`.trim(), "error");
     }
   };
 
@@ -1491,8 +1042,8 @@ export default function ListingPilotPhase3App() {
       } else {
         throw new Error("Failed to save brand voice");
       }
-    } catch {
-      showToast("Brand Voice Saved", "Updated locally in active configuration profile.", "info");
+    } catch (err) {
+      showToast("Brand Voice Not Saved", `The server didn't save it. ${err?.message || ""}`.trim(), "error");
     } finally {
       setIsSavingBrandVoice(false);
     }
@@ -1515,11 +1066,11 @@ export default function ListingPilotPhase3App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ banned_claims: updatedClaims })
       });
-      if (res.ok) {
-        showToast("Prohibited Claim Added", `RuleEngine now flags '${claim}' across all draft reviews.`, "success");
-      }
-    } catch {
-      showToast("Claim Saved Locally", `Active in session check rules.`, "info");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      showToast("Prohibited Claim Added", `RuleEngine now flags '${claim}' across all draft reviews.`, "success");
+    } catch (err) {
+      setBannedClaims(bannedClaims);
+      showToast("Claim Not Saved", `The server didn't save '${claim}'. ${err?.message || ""}`.trim(), "error");
     } finally {
       setIsSavingBannedClaims(false);
     }
@@ -1529,14 +1080,16 @@ export default function ListingPilotPhase3App() {
     const updatedClaims = bannedClaims.filter(c => c !== claimToRemove);
     setBannedClaims(updatedClaims);
     try {
-      await fetch(`${API_BASE}/settings/banned-claims`, {
+      const res = await fetch(`${API_BASE}/settings/banned-claims`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ banned_claims: updatedClaims })
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       showToast("Claim Removed", `RuleEngine will no longer flag '${claimToRemove}'.`, "info");
-    } catch {
-      // local state kept
+    } catch (err) {
+      setBannedClaims(bannedClaims);
+      showToast("Claim Not Removed", `The server didn't save the change. ${err?.message || ""}`.trim(), "error");
     }
   };
 
@@ -1573,8 +1126,8 @@ export default function ListingPilotPhase3App() {
       } else {
         throw new Error("Failed to save credentials");
       }
-    } catch {
-      showToast("Credentials Updated", "Saved to local configuration store.", "info");
+    } catch (err) {
+      showToast("Credentials Not Saved", `The server didn't save them. ${err?.message || ""}`.trim(), "error");
     } finally {
       setIsSavingCreds(false);
     }
@@ -1587,10 +1140,12 @@ export default function ListingPilotPhase3App() {
       if (res.ok) {
         const data = await res.json();
         setSystemHealth(data);
-        showToast("Health Status Refreshed", "All services & adapters reporting healthy.", "success");
+        showToast("Health Status Refreshed", "Latest service status loaded.", "success");
+      } else {
+        throw new Error(`HTTP ${res.status}`);
       }
-    } catch {
-      showToast("Health Checked", "Services online.", "info");
+    } catch (err) {
+      showToast("Health Check Failed", `Couldn't reach the server. ${err?.message || ""}`.trim(), "error");
     } finally {
       setIsRefreshingHealth(false);
     }
@@ -2293,7 +1848,7 @@ export default function ListingPilotPhase3App() {
                         </div>
                       )}
                       <dl className="attrs-grid">
-                        <dt>Brand</dt><dd>{activeDraftProduct?.brand || "Gulmohar Home"}</dd>
+                        <dt>Brand</dt><dd>{activeDraftProduct?.brand || "—"}</dd>
                         <dt>Category</dt><dd>{activeDraftProduct?.category}</dd>
                         <dt>Selling Price</dt><dd>₹{activeDraftProduct?.price} (MRP: ₹{activeDraftProduct?.mrp})</dd>
                         {Object.entries(activeDraftProduct?.attributes || {}).map(([k, v]) => (
@@ -2661,6 +2216,9 @@ export default function ListingPilotPhase3App() {
                             technicalSpecs={editTechnicalSpecs}
                             aplusContent={editAplusContent}
                             brandVoice={brandVoice}
+                            apiPayload={spApiPayload}
+                            apiAplusPayload={aplusPayload}
+                            onPublished={handleTwinPublished}
                           />
                         </div>
                       )}
@@ -2684,10 +2242,16 @@ export default function ListingPilotPhase3App() {
             <div style={{ background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "var(--radius-lg)", padding: "16px", boxShadow: "var(--shadow-sm)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
                 <span style={{ fontWeight: 700, fontFamily: "var(--f-display)" }}>Amazon.in</span>
-                <span className="chip" style={{ background: "var(--good-soft)", color: "var(--good)" }}>● SP-API Active</span>
+                {credentials.amazon?.status === "ready" ? (
+                  <span className="chip" style={{ background: "var(--good-soft)", color: "var(--good)" }}>● SP-API credentials set</span>
+                ) : (
+                  <span className="chip" style={{ background: "var(--warn-soft)", color: "var(--warn)" }}>● Stub mode</span>
+                )}
               </div>
               <p style={{ fontSize: "0.78rem", color: "var(--muted)", marginBottom: "10px" }}>
-                Official SP-API listings adapter. Live ASIN creation and automated schema compliance.
+                {credentials.amazon?.status === "ready"
+                  ? "SP-API Listings Items adapter. Publishes with your seller credentials."
+                  : "No SP-API credentials: publishing is simulated and nothing reaches Amazon. Add them in Admin & Settings."}
               </p>
               <div style={{ fontSize: "0.74rem", background: "var(--sunk)", padding: "6px 10px", borderRadius: "4px" }}>
                 Live ASINs: <b>{drafts.filter(d => d.marketplace === "amazon" && d.status === "live").length}</b> / {products.length}
@@ -2698,10 +2262,10 @@ export default function ListingPilotPhase3App() {
             <div style={{ background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "var(--radius-lg)", padding: "16px", boxShadow: "var(--shadow-sm)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
                 <span style={{ fontWeight: 700, fontFamily: "var(--f-display)" }}>Flipkart</span>
-                <span className="chip" style={{ background: "var(--good-soft)", color: "var(--good)" }}>● Seller API Active</span>
+                <span className="chip" style={{ background: "var(--warn-soft)", color: "var(--warn)" }}>● Stub only</span>
               </div>
               <p style={{ fontSize: "0.78rem", color: "var(--muted)", marginBottom: "10px" }}>
-                Listings v3 adapter for Flipkart catalog updates. Generates compliant FSN identifiers.
+                The live Flipkart API isn't connected yet: publishing is simulated and nothing reaches Flipkart.
               </p>
               <div style={{ fontSize: "0.74rem", background: "var(--sunk)", padding: "6px 10px", borderRadius: "4px" }}>
                 Live FSNs: <b>{drafts.filter(d => d.marketplace === "flipkart" && d.status === "live").length}</b> / {products.length}
@@ -3526,8 +3090,14 @@ export default function ListingPilotPhase3App() {
                   </button>
                 </div>
 
+                {!systemHealth && (
+                  <div style={{ background: "var(--warn-soft)", borderLeft: "4px solid var(--warn)", padding: "12px 16px", borderRadius: "var(--radius-sm)", marginBottom: "20px", fontSize: "0.84rem" }}>
+                    <b>Status not loaded:</b> the server didn't answer. Check that the backend is running, then use Refresh Status.
+                  </div>
+                )}
+
                 {/* Active Alerts Banner */}
-                {systemHealth.active_alerts && systemHealth.active_alerts.length > 0 && (
+                {systemHealth?.active_alerts && systemHealth.active_alerts.length > 0 && (
                   <div style={{ marginBottom: "20px" }}>
                     {systemHealth.active_alerts.map((alert, idx) => (
                       <div 
@@ -3547,37 +3117,48 @@ export default function ListingPilotPhase3App() {
                   </div>
                 )}
 
-                <div className="admin-grid">
-                  <div style={{ background: "var(--sunk)", padding: "14px", borderRadius: "var(--radius-sm)" }}>
-                    <div style={{ fontSize: "0.78rem", color: "var(--muted)", textTransform: "uppercase", fontWeight: 600 }}>Database Cluster</div>
-                    <div style={{ fontSize: "1.05rem", fontWeight: 700, margin: "4px 0", color: "var(--good)" }}>✓ Connected</div>
-                    <div style={{ fontSize: "0.78rem", color: "var(--muted)" }}>Neon Cloud PostgreSQL (Serverless ep-shy-rain AWS us-east-2)</div>
-                  </div>
+                {systemHealth && (() => {
+                  const lastSync = (mp) => {
+                    const v = systemHealth.last_sync?.[mp];
+                    if (!v) return "Never";
+                    const d = new Date(v);
+                    return isNaN(d) ? v : d.toLocaleString("en-IN");
+                  };
+                  const amazonLive = credentials.amazon?.status === "ready";
+                  return (
+                    <div className="admin-grid">
+                      <div style={{ background: "var(--sunk)", padding: "14px", borderRadius: "var(--radius-sm)" }}>
+                        <div style={{ fontSize: "0.78rem", color: "var(--muted)", textTransform: "uppercase", fontWeight: 600 }}>Database</div>
+                        <div style={{ fontSize: "1.05rem", fontWeight: 700, margin: "4px 0", color: systemHealth.services?.database?.status === "connected" ? "var(--good)" : "var(--warn)" }}>
+                          {systemHealth.services?.database?.status === "connected" ? "✓ Connected" : "✗ Unreachable"}
+                        </div>
+                        <div style={{ fontSize: "0.78rem", color: "var(--muted)" }}>{systemHealth.services?.database?.error || "Supabase PostgreSQL, queried on every status refresh."}</div>
+                      </div>
 
-                  <div style={{ background: "var(--sunk)", padding: "14px", borderRadius: "var(--radius-sm)" }}>
-                    <div style={{ fontSize: "0.78rem", color: "var(--muted)", textTransform: "uppercase", fontWeight: 600 }}>Amazon Sync Status</div>
-                    <div style={{ fontSize: "1.05rem", fontWeight: 700, margin: "4px 0", color: "var(--good)" }}>✓ Operational</div>
-                    <div style={{ fontSize: "0.78rem", color: "var(--muted)" }}>
-                      Last Sync: {systemHealth.last_sync?.amazon ? (systemHealth.last_sync.amazon.includes("T") ? systemHealth.last_sync.amazon.split("T")[1].substring(0, 5) + " UTC" : systemHealth.last_sync.amazon) : "Active"}
-                    </div>
-                  </div>
+                      <div style={{ background: "var(--sunk)", padding: "14px", borderRadius: "var(--radius-sm)" }}>
+                        <div style={{ fontSize: "0.78rem", color: "var(--muted)", textTransform: "uppercase", fontWeight: 600 }}>Amazon SP-API</div>
+                        <div style={{ fontSize: "1.05rem", fontWeight: 700, margin: "4px 0", color: amazonLive ? "var(--good)" : "var(--warn)" }}>
+                          {amazonLive ? "Credentials set (live mode)" : "Stub mode: credentials missing"}
+                        </div>
+                        <div style={{ fontSize: "0.78rem", color: "var(--muted)" }}>Last Sync: {lastSync("amazon")}</div>
+                      </div>
 
-                  <div style={{ background: "var(--sunk)", padding: "14px", borderRadius: "var(--radius-sm)" }}>
-                    <div style={{ fontSize: "0.78rem", color: "var(--muted)", textTransform: "uppercase", fontWeight: 600 }}>Flipkart Sync Status</div>
-                    <div style={{ fontSize: "1.05rem", fontWeight: 700, margin: "4px 0", color: "var(--good)" }}>✓ Operational</div>
-                    <div style={{ fontSize: "0.78rem", color: "var(--muted)" }}>
-                      Last Sync: {systemHealth.last_sync?.flipkart ? (systemHealth.last_sync.flipkart.includes("T") ? systemHealth.last_sync.flipkart.split("T")[1].substring(0, 5) + " UTC" : systemHealth.last_sync.flipkart) : "Active"}
-                    </div>
-                  </div>
+                      <div style={{ background: "var(--sunk)", padding: "14px", borderRadius: "var(--radius-sm)" }}>
+                        <div style={{ fontSize: "0.78rem", color: "var(--muted)", textTransform: "uppercase", fontWeight: 600 }}>Flipkart Seller API</div>
+                        <div style={{ fontSize: "1.05rem", fontWeight: 700, margin: "4px 0", color: "var(--warn)" }}>Stub only: live API not connected</div>
+                        <div style={{ fontSize: "0.78rem", color: "var(--muted)" }}>Last Sync: {lastSync("flipkart")}</div>
+                      </div>
 
-                  <div style={{ background: "var(--sunk)", padding: "14px", borderRadius: "var(--radius-sm)" }}>
-                    <div style={{ fontSize: "0.78rem", color: "var(--muted)", textTransform: "uppercase", fontWeight: 600 }}>Meesho Bulk Exporter</div>
-                    <div style={{ fontSize: "1.05rem", fontWeight: 700, margin: "4px 0", color: "var(--good)" }}>✓ Ready</div>
-                    <div style={{ fontSize: "0.78rem", color: "var(--muted)" }}>
-                      Last Export: {systemHealth.last_sync?.meesho ? (systemHealth.last_sync.meesho.includes("T") ? systemHealth.last_sync.meesho.split("T")[1].substring(0, 5) + " UTC" : systemHealth.last_sync.meesho) : "Ready"}
+                      <div style={{ background: "var(--sunk)", padding: "14px", borderRadius: "var(--radius-sm)" }}>
+                        <div style={{ fontSize: "0.78rem", color: "var(--muted)", textTransform: "uppercase", fontWeight: 600 }}>Meesho Bulk Exporter</div>
+                        <div style={{ fontSize: "1.05rem", fontWeight: 700, margin: "4px 0", color: meeshoTemplates.length ? "var(--good)" : "var(--warn)" }}>
+                          {meeshoTemplates.length ? `${meeshoTemplates.length} official template(s) loaded` : "No official templates found"}
+                        </div>
+                        <div style={{ fontSize: "0.78rem", color: "var(--muted)" }}>Last Export: {lastSync("meesho")}</div>
+                      </div>
                     </div>
-                  </div>
-                </div>
+                  );
+                })()}
               </div>
             </div>
           )}
@@ -3740,7 +3321,7 @@ export default function ListingPilotPhase3App() {
                     {drawerProduct.category || "General"}
                   </span>
                   <span style={{ fontSize: "0.75rem", color: "var(--muted)" }}>
-                    {drawerProduct.brand || "Gulmohar Home"}
+                    {drawerProduct.brand || "—"}
                   </span>
                 </div>
                 <div className="drawer-title">
@@ -4107,7 +3688,7 @@ export default function ListingPilotPhase3App() {
                           </span>
                         </div>
                         <div style={{ fontSize: "0.72rem", color: "var(--muted)", marginTop: "4px" }}>
-                          {match ? `Score: ${match.rule_results?.score || 24}/25` : "Rules auto-checked"}
+                          {match ? `Score: ${match.rule_results?.score ?? 0}/25` : "Not generated yet"}
                         </div>
                         <button 
                           className="channel-cell-action"
@@ -4345,7 +3926,7 @@ export default function ListingPilotPhase3App() {
                   type="text" 
                   value={newForm.images} 
                   onChange={(e) => setNewForm({ ...newForm, images: e.target.value })} 
-                  placeholder="https://images.unsplash.com/... or leave blank for default placeholder" 
+                  placeholder="https://... (leave blank to add photos later)" 
                 />
               </div>
 
@@ -4361,7 +3942,7 @@ export default function ListingPilotPhase3App() {
             </div>
             <div className="modal-footer">
               <button className="btn" onClick={() => setShowAddModal(false)}>Cancel</button>
-              <button className="btn btn-primary" onClick={handleAddProduct}>Save Product to Neon DB</button>
+              <button className="btn btn-primary" onClick={handleAddProduct}>Save Product</button>
             </div>
           </div>
         </div>
@@ -4412,6 +3993,9 @@ export default function ListingPilotPhase3App() {
               technicalSpecs={editTechnicalSpecs}
               aplusContent={editAplusContent}
               brandVoice={brandVoice}
+              apiPayload={spApiPayload}
+              apiAplusPayload={aplusPayload}
+              onPublished={handleTwinPublished}
               onClose={() => setShowTwinModal(false)}
               isModal={true}
             />

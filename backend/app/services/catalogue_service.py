@@ -1,3 +1,4 @@
+from app.core.config import settings
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, func
 from typing import List, Optional, Tuple, Dict, Any
@@ -111,9 +112,10 @@ class CatalogueService:
             img_count = item.get("image_count", len(img_list))
 
             if existing:
-                existing.name = item.get("name", existing.name)
-                existing.category = item.get("category", existing.category)
-                existing.brand = item.get("brand", existing.brand)
+                # A field the file left blank (None) keeps its stored value
+                for field in ("name", "category", "brand"):
+                    if item.get(field):
+                        setattr(existing, field, item[field])
                 if item.get("mrp") is not None:
                     existing.mrp = item.get("mrp")
                 if item.get("price") is not None:
@@ -137,15 +139,15 @@ class CatalogueService:
                 new_prod = Product(
                     sku=sku,
                     name=item.get("name", ""),
-                    category=item.get("category", "General"),
-                    brand=item.get("brand", "Gulmohar Home"),
+                    category=item.get("category") or "General",
+                    brand=item.get("brand") or settings.DEFAULT_BRAND,
                     mrp=item.get("mrp"),
-                    price=item.get("price", 0.0),
-                    stock=item.get("stock", 0),
+                    price=item.get("price") or 0.0,
+                    stock=item.get("stock") or 0,
                     images=img_list,
                     image_count=img_count,
                     attributes=item.get("attributes", {}),
-                    description=item.get("description", ""),
+                    description=item.get("description"),
                     current_listing=item.get("current_listing", {})
                 )
                 db.add(new_prod)

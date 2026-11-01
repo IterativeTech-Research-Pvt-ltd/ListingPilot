@@ -3,7 +3,7 @@ import csv
 import re
 import xml.etree.ElementTree as ET
 import openpyxl
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Optional, Tuple
 from app.schemas.import_export import RowValidationError
 
 # Mapping of common column variants to normalized field names
@@ -12,18 +12,18 @@ HEADER_MAPPINGS = {
     "sku": [
         "sku", "sku code", "item code", "product code", "part number", "part no", 
         "item no", "code", "barcode", "asin", "seller sku id", "seller sku id *", 
-        "seller sku", "product id / sku", "style id"
+        "seller sku", "product id / sku", "sku id"
     ],
     "name": [
         "product name", "item name", "title", "name", "product title", "item description", 
         "product", "particulars", "product name *", "item name *"
     ],
     "category": [
-        "category", "cat", "product category", "item group", "group", "product type", 
-        "department", "under", "stock group", "generic name"
+        "category", "cat", "product category", "item group", "product type", 
+        "department", "under", "stock group"
     ],
     "brand": [
-        "brand", "brand name", "manufacturer", "make", "brand name *", "manufacturer name *"
+        "brand", "brand name", "make", "brand name *"
     ],
     "mrp": [
         "mrp", "m.r.p", "mrp (inr)", "maximum retail price", "list price", 
@@ -59,6 +59,18 @@ def clean_str(val: Any) -> str:
     s = str(val).strip()
     return s
 
+def optional_num(val: Any) -> Optional[float]:
+    """Number in the cell, or None when the cell is blank or has no digits."""
+    if val is None or (isinstance(val, str) and not val.strip()):
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    cleaned = re.sub(r"[^\d.]", "", str(val))
+    try:
+        return float(cleaned) if cleaned else None
+    except ValueError:
+        return None
+
 def clean_num(val: Any, default: float = 0.0) -> float:
     if val is None or val == "":
         return default
@@ -93,9 +105,9 @@ class CatalogueParser:
     @classmethod
     def _parse_excel(cls, content: bytes) -> Tuple[List[Dict[str, Any]], List[RowValidationError], List[RowValidationError]]:
         wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
-        # Select best sheet: priority to Meesho's 'Validate Sheet', 'Product Details', 'Master Catalogue'
+        # Select best sheet: ListingPilot's Meesho fill-in sheet, then Meesho's 'Validate Sheet', 'Product Details', ...
         sheet = None
-        priority_sheets = ["Validate Sheet", "Product Details", "Template", "Catalog", "Master Catalogue", "Products", "Sheet1"]
+        priority_sheets = ["Fill in", "Validate Sheet", "Product Details", "Template", "Catalog", "Master Catalogue", "Products", "Sheet1"]
         for name in priority_sheets:
             for sname in wb.sheetnames:
                 if sname.strip().lower() == name.lower():
@@ -161,7 +173,9 @@ class CatalogueParser:
         for idx, h in enumerate(headers):
             matched = False
             for target_field, candidates in HEADER_MAPPINGS.items():
-                if any(c == h or h.startswith(c) for c in candidates):
+                # Exact header match only: a prefix match sent "Manufacturer Name" to brand and
+                # "Product Description" to the product name
+                if h in candidates:
                     col_map[target_field] = idx
                     matched = True
                     break
@@ -188,33 +202,25 @@ class CatalogueParser:
 
             raw_sku = clean_str(get_val("sku"))
             name = clean_str(get_val("name"))
-            category = clean_str(get_val("category")) or "General"
-            brand = clean_str(get_val("brand")) or "Gulmohar Home"
+            # Blank means "not in this file": updates keep the stored value (CatalogueService)
+            category = clean_str(get_val("category")) or None
+            brand = clean_str(get_val("brand")) or None
             price_raw = get_val("price")
             mrp_raw = get_val("mrp")
             stock_raw = get_val("stock")
             images_raw = get_val("images")
 
-            # Basic Validation
+            # Basic Validation. A missing SKU is never made up: one built from the name would
+            # collide ("Handmade bedsheet" / "Handmade planter") and overwrite another product
             if not raw_sku:
-                # If name is present, generate a fallback SKU
-                if name:
-                    raw_sku = "SKU-" + re.sub(r'[^A-Za-z0-9]', '', name[:8]).upper()
-                    warnings.append(RowValidationError(
-                        row_number=curr_row_num,
-                        sku=raw_sku,
-                        field="sku",
-                        message=f"Missing SKU at row {curr_row_num}; auto-generated '{raw_sku}'.",
-                        severity="warning"
-                    ))
-                else:
-                    errors.append(RowValidationError(
-                        row_number=curr_row_num,
-                        field="sku",
-                        message=f"Row {curr_row_num} has no SKU or Product Name. Row skipped.",
-                        severity="error"
-                    ))
-                    continue
+                errors.append(RowValidationError(
+                    row_number=curr_row_num,
+                    field="sku",
+                    message=(f"Row {curr_row_num} ('{name}') has no SKU. Row skipped." if name
+                             else f"Row {curr_row_num} has no SKU or Product Name. Row skipped."),
+                    severity="error"
+                ))
+                continue
 
             if raw_sku in seen_skus:
                 errors.append(RowValidationError(
@@ -236,8 +242,8 @@ class CatalogueParser:
                 ))
                 continue
 
-            price = clean_num(price_raw, default=0.0)
-            if price <= 0:
+            price = optional_num(price_raw)
+            if "price" in col_map and not price:
                 warnings.append(RowValidationError(
                     row_number=curr_row_num,
                     sku=raw_sku,
@@ -246,17 +252,24 @@ class CatalogueParser:
                     severity="warning"
                 ))
 
-            mrp = clean_num(mrp_raw, default=0.0) if mrp_raw else (price * 1.2 if price > 0 else 0.0)
-            stock = int(clean_num(stock_raw, default=0))
+            mrp = optional_num(mrp_raw)
+            stock_num = optional_num(stock_raw)
+            stock = max(0, int(stock_num)) if stock_num is not None else None
 
             # Images
             images = []
             if images_raw:
-                if isinstance(images_raw, str):
+                # A bare number (an image count; CSV cells arrive as text) is not an image link
+                if isinstance(images_raw, str) and not re.fullmatch(r"\s*\d+(\.\d+)?\s*", images_raw):
                     images = [img.strip() for img in re.split(r"[,;\n\r]+", images_raw) if img.strip()]
-                elif isinstance(images_raw, (int, float)):
-                    # Sometimes client imports just image count
-                    images = [f"image_{i+1}.jpg" for i in range(int(images_raw))]
+                else:
+                    warnings.append(RowValidationError(
+                        row_number=curr_row_num,
+                        sku=raw_sku,
+                        field="images",
+                        message=f"Images column holds a number, not image links, for SKU '{raw_sku}'; ignored.",
+                        severity="warning"
+                    ))
 
             # Also check for other image columns (e.g. Meesho's Secondary Image 2, 3, 4, Image 1, Image 2, Photo URLs)
             extra_img_cols = []
@@ -273,8 +286,9 @@ class CatalogueParser:
 
             # Category dynamic attributes
             attributes = {}
+            image_cols = {idx for _, idx in extra_img_cols}
             for attr_name, idx in attr_cols.items():
-                if idx < len(row):
+                if idx < len(row) and idx not in image_cols:
                     val = clean_str(row[idx])
                     if val:
                         # Clean key title
@@ -300,11 +314,11 @@ class CatalogueParser:
                 "brand": brand,
                 "mrp": mrp,
                 "price": price,
-                "stock": max(0, stock),
+                "stock": stock,
                 "images": images,
                 "image_count": len(images),
                 "attributes": attributes,
-                "description": attributes.get("Notes") or attributes.get("Occasion / Notes") or ""
+                "description": attributes.get("Notes") or attributes.get("Occasion / Notes") or None
             }
 
             seen_skus.add(raw_sku)
@@ -367,9 +381,9 @@ class CatalogueParser:
             products.append({
                 "sku": sku,
                 "name": name,
-                "category": parent or "General",
-                "brand": "Gulmohar Home",
-                "mrp": rate * 1.25 if rate > 0 else 0.0,
+                "category": parent or None,
+                "brand": None,
+                "mrp": None,
                 "price": rate,
                 "stock": max(0, closing_qty),
                 "images": [],
@@ -378,7 +392,7 @@ class CatalogueParser:
                     "Tally Group": parent,
                     "Import Source": "Tally XML"
                 },
-                "description": f"Imported from Tally Stock Item: {name}"
+                "description": None
             })
 
         return products, errors, warnings
