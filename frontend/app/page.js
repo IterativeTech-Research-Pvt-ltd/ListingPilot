@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useRef, useMemo } from "react";
 import MarketplaceLiveTwinPreview from "./components/MarketplaceLiveTwinPreview";
+import MeeshoRequiredFields from "./components/MeeshoRequiredFields";
+import SellerDetailsCard from "./components/SellerDetailsCard";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000/api/v1";
 
@@ -557,6 +559,13 @@ export default function ListingPilotPhase3App() {
     }
   };
 
+  // The server's copy after a save elsewhere (e.g. Meesho required fields), everywhere it's shown
+  const applySavedProduct = (saved) => {
+    setProducts(prev => prev.map(p => p.id === saved.id ? saved : p));
+    setSelectedProduct(prev => prev?.id === saved.id ? saved : prev);
+    setDrawerProduct(prev => prev?.id === saved.id ? saved : prev);
+  };
+
   // ── Product Details Inline Editor ──────────────────────────────────────────
 
   const handleSaveProductDetails = async () => {
@@ -784,7 +793,20 @@ export default function ListingPilotPhase3App() {
       document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
 
-      if (isZip) {
+      let skipped = {};
+      try { skipped = JSON.parse(res.headers.get("x-meesho-skipped") || "{}"); } catch { skipped = {}; }
+      const skippedCats = Object.keys(skipped);
+      if (skippedCats.length) {
+        // One toast at a time, so the download and what it leaves out are said together
+        const count = skippedCats.reduce((n, c) => n + skipped[c].length, 0);
+        showToast(
+          `Meesho File Ready, ${count} SKU(s) Left Out`,
+          `${downloadFilename} downloaded. Not included (no official Meesho template): ` +
+            `${skippedCats.map(c => `${c} (${skipped[c].length})`).join(", ")}. ` +
+            "Download those templates from the supplier panel into docs/meesho/templates to include them.",
+          "warn"
+        );
+      } else if (isZip) {
         showToast(
           "Meesho Package Ready 📦", 
           `Multi-category package (${downloadFilename}) contains separate official Excel sheets for each category.`, 
@@ -1858,6 +1880,9 @@ export default function ListingPilotPhase3App() {
                           </div>
                         ))}
                       </dl>
+                      {targetMarketplace === "meesho" && activeDraftProduct && (
+                        <MeeshoRequiredFields product={activeDraftProduct} onSaved={applySavedProduct} notify={showToast} />
+                      )}
                     </div>
                   </div>
 
@@ -2833,6 +2858,7 @@ export default function ListingPilotPhase3App() {
               </div>
             </div>
           )}
+          {adminActiveSubTab === "brand" && <SellerDetailsCard notify={showToast} />}
 
           {/* ── Sub-tab 2: Prohibited Claims / Banned Words (ADM-1, RUL-4) ────── */}
           {adminActiveSubTab === "claims" && (
@@ -3664,6 +3690,7 @@ export default function ListingPilotPhase3App() {
                         </div>
                       )}
                     </dl>
+                    <MeeshoRequiredFields product={drawerProduct} onSaved={applySavedProduct} notify={showToast} />
                   </>
                 )}
               </div>

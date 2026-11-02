@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 from app.core.config import settings
+from app.services.settings_service import SettingsService, SELLER_DETAIL_FIELDS
 from app.models.product import Product
 from app.models.draft import ListingDraft
 
@@ -479,6 +480,9 @@ class MeeshoAdapter:
             return _grams(direct or _attr(attrs, "Net Weight (gms)", "Net Weight", "Weight"))
         if direct is not None or seller_attr != col_name:
             return direct
+        # The seller's legal details from Settings, for products that don't carry their own
+        if row.get("seller_details", {}).get(col_name):
+            return row["seller_details"][col_name]
 
         size_text = _attr(attrs, "Size", "Dimensions")
         included = _attr(attrs, "Included Components", "Included", "Sales Package", "Package Contents", "In The Box")
@@ -617,11 +621,13 @@ class MeeshoAdapter:
         category = template_info.get("category", "")
         problems: List[Dict[str, Any]] = []
         name_rows: Dict[str, List[Dict[str, Any]]] = {}
+        seller_details = SettingsService.get_seller_details()
 
         # Ingest each product row starting at Row 5
         for idx, item in enumerate(products_with_drafts):
             target_row = 5 + idx
             row = cls._row_inputs(item)
+            row["seller_details"] = seller_details
             written: Dict[str, Any] = {}
 
             for col_idx, col_name in col_map.items():
@@ -651,7 +657,9 @@ class MeeshoAdapter:
                     if not any(pr["sku"] == row["sku"] and pr["field"] == col_name for pr in problems):
                         problems.append({
                             "sku": row["sku"], "category": category, "field": col_name,
-                            "reason": "compulsory and missing from the product's data",
+                            "reason": ("compulsory; set it once in Settings > Seller Details"
+                                       if col_name in SELLER_DETAIL_FIELDS else
+                                       "compulsory and missing from the product's data"),
                             "blocking": True,
                         })
 
@@ -675,12 +683,14 @@ class MeeshoAdapter:
         products_with_drafts: List[Dict[str, Any]],
         category_filter: Optional[str] = None,
         force_zip: bool = False
-    ) -> Tuple[io.BytesIO, str, str]:
+    ) -> Tuple[io.BytesIO, str, str, List[Dict[str, Any]]]:
         """
         Groups items by category and fills each category's official template.
-          - One category: returns (xlsx_buf, xlsx media type, filename)
+          - One category: returns (xlsx_buf, xlsx media type, filename, skipped)
           - Several categories: returns a zip with one .xlsx per category
-        force_zip is accepted for API compatibility; several categories are always zipped.
+        Items whose category has no official template are left out and listed in `skipped`
+        (the caller must tell the seller); when nothing is left to export, that is an error.
+        force_zip zips even a single category's file (the dashboard's "Full Catalog (ZIP)"); several are always zipped.
         """
         # If category filter provided, restrict items
         if category_filter and category_filter != "All":
@@ -699,7 +709,7 @@ class MeeshoAdapter:
         for item in products_with_drafts:
             product = item.get("product")
             cat = (
-                category_filter
+                (category_filter if category_filter != "All" else None)
                 or getattr(product, "category", None)
                 or item.get("category")
                 or "General"
@@ -708,11 +718,12 @@ class MeeshoAdapter:
 
         generated_files: List[Tuple[str, io.BytesIO]] = []
         problems: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
 
         for cat_name, cat_items in grouped.items():
             tmpl = cls.find_template(cat_name)
             if not tmpl:
-                problems.extend(cls._missing_template_problems(cat_name, cat_items))
+                skipped.extend(cls._missing_template_problems(cat_name, cat_items, blocking=False))
                 continue
             try:
                 buf = cls.populate_template(tmpl, cat_items)
@@ -726,15 +737,18 @@ class MeeshoAdapter:
             generated_files.append((file_name, buf))
 
         if problems:
-            raise MeeshoExportIncomplete(problems)
+            raise MeeshoExportIncomplete(problems + skipped)
+        if not generated_files:
+            raise MeeshoExportIncomplete([{**p, "blocking": True} for p in skipped])
 
-        # One category: the .xlsx itself; several: always a zip, so no category's file is dropped
-        if len(generated_files) == 1:
+        # One category: the .xlsx itself unless a zip was asked for; several: always a zip, so no file is dropped
+        if len(generated_files) == 1 and not force_zip:
             file_name, buf = generated_files[0]
             return (
                 buf,
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 file_name,
+                skipped,
             )
 
         zip_buf = io.BytesIO()
@@ -748,6 +762,7 @@ class MeeshoAdapter:
             zip_buf,
             "application/zip",
             f"ListingPilot_Meesho_Batch_{date_stamp}.zip",
+            skipped,
         )
 
     @classmethod
@@ -771,7 +786,8 @@ class MeeshoAdapter:
                     if col_idx in tmpl.get("dropdowns", {}):
                         options.setdefault(col_name, tmpl["dropdowns"][col_idx])
             if not tmpl:
-                problems.extend(cls._missing_template_problems(cat_name, cat_items))
+                # Skipped by the export, so nothing to fill; still listed under "What's wrong"
+                problems.extend(cls._missing_template_problems(cat_name, cat_items, blocking=False))
                 continue
             try:
                 cls.populate_template(tmpl, cat_items)
@@ -782,9 +798,10 @@ class MeeshoAdapter:
             return None
 
         image_fields = ["Image 1 (Front)", "Image 2", "Image 3", "Image 4"]
-        # Product Name problems are fixed by regenerating the draft, not by filling a cell
+        # Product Name problems are fixed by regenerating the draft, and seller details once in
+        # Settings, not by filling a cell per SKU
         fields = [f for f in field_order if any(p["field"] == f for p in blocking)
-                  and f != "Product Name" and not f.lower().startswith("image")]
+                  and f != "Product Name" and not f.lower().startswith("image") and f not in SELLER_DETAIL_FIELDS]
 
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -851,6 +868,51 @@ class MeeshoAdapter:
         return buf
 
     @classmethod
+    def seller_fields(cls, category: Optional[str]) -> Dict[str, Dict[str, Any]]:
+        """{attribute name: {"field": template column, "options": [...]}} for every column of the category's template."""
+        tmpl = cls.find_template(category)
+        if not tmpl:
+            return {}
+        dropdowns = tmpl.get("dropdowns", {})
+        return {
+            cls._seller_attribute(tmpl["category"], name): {"field": name, "options": dropdowns.get(idx, [])}
+            for idx, name in tmpl["columns"].items()
+        }
+
+    @classmethod
+    def missing_fields(cls, item: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        What one product still needs before the Meesho export accepts it, found by running the export's
+        own checks. `fields` are the ones the seller fills (the attribute each is saved under and the
+        template's exact options); `seller` are seller details missing from Settings; `other` are
+        blockers a value can't fix (images, Product Name).
+        """
+        product = item.get("product")
+        category = getattr(product, "category", None) or item.get("category")
+        tmpl = cls.find_template(category)
+        if not tmpl:
+            return {"category": category, "template": None, "fields": [], "seller": [], "other": []}
+        try:
+            cls.populate_template(tmpl, [item])
+            problems: List[Dict[str, Any]] = []
+        except MeeshoExportIncomplete as e:
+            problems = [p for p in e.problems if p["blocking"]]
+
+        by_field = {spec["field"]: (attr, spec["options"]) for attr, spec in cls.seller_fields(category).items()}
+        fields, seller, other = [], [], []
+        for p in problems:
+            name = p["field"]
+            if name in SELLER_DETAIL_FIELDS:
+                seller.append(name)
+                continue
+            if name == "Product Name" or name.lower().startswith("image") or name not in by_field:
+                other.append({"field": name, "reason": p["reason"]})
+                continue
+            attr, options = by_field[name]
+            fields.append({"field": name, "attribute": attr, "options": options, "reason": p["reason"]})
+        return {"category": category, "template": tmpl["filename"], "fields": fields, "seller": seller, "other": other}
+
+    @classmethod
     def _group_by_category(cls, products_with_drafts: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
         grouped: Dict[str, List[Dict[str, Any]]] = {}
         for item in products_with_drafts:
@@ -871,11 +933,11 @@ class MeeshoAdapter:
         return cls.populate_template(tmpl, products_with_drafts)
 
     @classmethod
-    def _missing_template_problems(cls, category: str, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _missing_template_problems(cls, category: str, items: List[Dict[str, Any]], blocking: bool = True) -> List[Dict[str, Any]]:
         """Meesho only accepts its own category template, so a category without one can't be exported."""
         return [{
             "sku": cls._row_inputs(item)["sku"], "category": category, "field": "Template",
             "reason": f"no official Meesho template for '{category}'; download it from the supplier panel "
                       f"(Catalog Upload > Bulk) into docs/meesho/templates",
-            "blocking": True,
+            "blocking": blocking,
         } for item in items]

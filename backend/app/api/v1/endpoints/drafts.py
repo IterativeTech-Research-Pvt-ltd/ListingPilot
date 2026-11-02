@@ -1,3 +1,4 @@
+import json
 import re
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
@@ -10,6 +11,7 @@ from app.core.database import get_db
 from app.core.config import settings
 from app.models.product import Product
 from app.models.draft import ListingDraft
+from app.schemas.product import ProductResponse
 from app.services.ai_service import AIService
 from app.services.rule_engine import RuleEngine
 from app.services.amazon_adapter import AmazonAdapter
@@ -648,7 +650,7 @@ def export_meesho_catalog(
         })
 
     try:
-        buf, media_type, filename = MeeshoAdapter.generate_batch_export(items, category_filter=category, force_zip=as_zip)
+        buf, media_type, filename, skipped = MeeshoAdapter.generate_batch_export(items, category_filter=category, force_zip=as_zip)
     except MeeshoExportIncomplete as e:
         # No file at all rather than one Meesho rejects or that carries values we made up
         raise HTTPException(status_code=422, detail={
@@ -656,10 +658,17 @@ def export_meesho_catalog(
             "problems": e.problems,
         })
     SettingsService.record_sync("meesho")
+    # Products left out for lack of an official template, {category: [sku, ...]}, so the UI can say so
+    skipped_by_cat: Dict[str, List[str]] = {}
+    for p in skipped:
+        skipped_by_cat.setdefault(p["category"], []).append(p["sku"])
     return StreamingResponse(
         buf,
         media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Meesho-Skipped": json.dumps(skipped_by_cat),
+        }
     )
 
 
@@ -690,6 +699,62 @@ def meesho_fill_in_sheet(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="Meesho_fill_in_{safe_cat}.xlsx"'}
     )
+
+
+def _meesho_missing(db: Session, product: Product) -> Dict[str, Any]:
+    draft = _drafts_by_product(db, [product], "meesho").get((product.id, "meesho"))
+    return MeeshoAdapter.missing_fields({"product": product, "draft": draft.to_dict() if draft else None})
+
+
+class MeeshoFieldValues(BaseModel):
+    values: Dict[str, str]
+
+
+@router.get("/meesho/missing-fields/{product_id}", summary="Compulsory Meesho fields this product still lacks, with the template's options")
+def get_meesho_missing_fields(product_id: int, db: Session = Depends(get_db)):
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return _meesho_missing(db, product)
+
+
+@router.put("/meesho/missing-fields/{product_id}", summary="Save seller-entered Meesho fields into the product's attributes")
+def save_meesho_missing_fields(product_id: int, payload: MeeshoFieldValues, db: Session = Depends(get_db)):
+    """
+    Merges the given values into the product's attributes (other attributes are untouched).
+    Each key must be one of the category template's fields, and a dropdown value must be one of the
+    template's options exactly as spelled; otherwise nothing is saved.
+    """
+    product = db.query(Product).filter(Product.id == product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    allowed = MeeshoAdapter.seller_fields(product.category)
+    if not allowed:
+        raise HTTPException(status_code=422, detail=f"No official Meesho template for '{product.category}'.")
+
+    errors, clean = [], {}
+    for attr, value in payload.values.items():
+        value = (value or "").strip()
+        spec = allowed.get(attr)
+        if spec is None:
+            errors.append(f"'{attr}' is not a field of the {product.category} template")
+        elif not value:
+            errors.append(f"'{attr}' is empty")
+        elif spec["options"] and value not in spec["options"]:
+            errors.append(f"'{value}' is not one of the template's options for '{spec['field']}'")
+        else:
+            clean[attr] = value
+    if errors or not clean:
+        raise HTTPException(status_code=422, detail={"message": "Nothing saved.", "errors": errors or ["No values given."]})
+
+    # A new dict, so SQLAlchemy sees the JSON column change
+    product.attributes = {**(product.attributes or {}), **clean}
+    db.commit()
+    db.refresh(product)
+    return {
+        "product": ProductResponse.model_validate(product).model_dump(mode="json"),
+        "missing": _meesho_missing(db, product),
+    }
 
 
 @router.get("/meesho/templates", summary="List available official Meesho category templates")

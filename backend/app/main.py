@@ -43,8 +43,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    # The dashboard names downloaded exports from this header
-    expose_headers=["Content-Disposition"],
+    # The dashboard names downloaded exports from Content-Disposition and reports X-Meesho-Skipped
+    expose_headers=["Content-Disposition", "X-Meesho-Skipped"],
 )
 
 @app.middleware("http")

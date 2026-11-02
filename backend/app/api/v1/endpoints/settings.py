@@ -76,6 +76,21 @@ def update_banned_claims(payload: BannedClaimsUpdate):
     return SettingsService.update_banned_claims(payload.banned_claims)
 
 
+@router.get("/seller-details", response_model=Dict[str, str])
+def get_seller_details():
+    """The seller's legal details (manufacturer, packer, importer, country of origin) used for every product."""
+    return SettingsService.get_seller_details()
+
+
+@router.put("/seller-details", response_model=Dict[str, str])
+def update_seller_details(payload: Dict[str, Optional[str]]):
+    """Saves seller details; unknown fields or malformed pincodes save nothing (422)."""
+    try:
+        return SettingsService.update_seller_details(payload)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
 @router.get("/credentials", response_model=Dict[str, Any])
 def get_credentials():
     """Returns masked credentials and connection statuses for marketplaces and AI engine (ADM-3)."""

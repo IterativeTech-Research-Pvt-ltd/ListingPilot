@@ -19,6 +19,15 @@ SETTINGS_FILE = Path(
     or Path(__file__).resolve().parents[1] / "data" / "dynamic_settings.json"
 )
 
+# The seller's legal details, the same on every product. Marketplace exports use them for any
+# product that doesn't carry its own value. Names match the Meesho template columns.
+SELLER_DETAIL_FIELDS = [
+    "Country of Origin",
+    "Manufacturer Name", "Manufacturer Address", "Manufacturer Pincode",
+    "Packer Name", "Packer Address", "Packer Pincode",
+    "Importer Name", "Importer Address", "Importer Pincode",
+]
+
 DEFAULT_SETTINGS = {
     "brand_voice": {
         "brand_name": "Gulmohar Home",
@@ -123,6 +132,27 @@ class SettingsService:
         data["banned_claims"] = cleaned
         cls._save(data)
         return cleaned
+
+    @classmethod
+    def get_seller_details(cls) -> Dict[str, str]:
+        """The seller's saved legal details; a field never saved is an empty string, never a default."""
+        saved = cls._ensure_loaded().get("seller_details", {})
+        return {f: str(saved.get(f) or "").strip() for f in SELLER_DETAIL_FIELDS}
+
+    @classmethod
+    def update_seller_details(cls, update: Dict[str, Optional[str]]) -> Dict[str, str]:
+        """Saves the given fields (an empty value clears one). Raises ValueError and saves nothing on bad input."""
+        unknown = [k for k in update if k not in SELLER_DETAIL_FIELDS]
+        if unknown:
+            raise ValueError(f"Unknown seller detail(s): {', '.join(unknown)}")
+        clean = {k: (v or "").strip() for k, v in update.items()}
+        bad_pins = [k for k, v in clean.items() if k.endswith("Pincode") and v and not (v.isdigit() and len(v) == 6)]
+        if bad_pins:
+            raise ValueError(f"{', '.join(bad_pins)} must be a 6-digit pincode")
+        data = cls._ensure_loaded()
+        data["seller_details"] = {**cls.get_seller_details(), **clean}
+        cls._save(data)
+        return cls.get_seller_details()
 
     @classmethod
     def get_brand_voice(cls) -> Dict[str, str]:

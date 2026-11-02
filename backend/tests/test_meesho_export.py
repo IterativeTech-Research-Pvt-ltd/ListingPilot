@@ -77,7 +77,7 @@ def export_problems(items, category="Tshirts"):
 
 
 def test_complete_product_exports_its_own_values():
-    buf, _, _ = MeeshoAdapter.generate_batch_export([tshirt("TS-1", "Gulmohar Home Black Cotton Tee")], category_filter="Tshirts")
+    buf, _, _, _ = MeeshoAdapter.generate_batch_export([tshirt("TS-1", "Gulmohar Home Black Cotton Tee")], category_filter="Tshirts")
     row = sheet_row(buf)
     assert row["Product Name"] == "Gulmohar Home Black Cotton Tee"
     assert row["Meesho Price"] == 499.0  # the seller's price, not a computed discount
@@ -114,7 +114,7 @@ def test_shared_product_name_across_designs_blocks_export():
 def test_size_variants_of_one_style_may_share_a_name():
     items = [tshirt("TS-6M", "Variant tee", **{"Style ID": "TS-6"}),
              tshirt("TS-6L", "Variant tee", **{"Style ID": "TS-6", "Size": "L"})]
-    buf, _, _ = MeeshoAdapter.generate_batch_export(items, category_filter="Tshirts")
+    buf, _, _, _ = MeeshoAdapter.generate_batch_export(items, category_filter="Tshirts")
     assert sheet_row(buf, 5)["Variation"] == "M" and sheet_row(buf, 6)["Variation"] == "L"
 
 
@@ -171,7 +171,7 @@ def bedsheet_row(buf, row=5):
 
 
 def test_bedsheet_measurements_come_from_the_stated_sizes():
-    buf, _, _ = MeeshoAdapter.generate_batch_export([bedsheet("BS-1", "Indigo floral bedsheet")], category_filter="Bedsheets")
+    buf, _, _, _ = MeeshoAdapter.generate_batch_export([bedsheet("BS-1", "Indigo floral bedsheet")], category_filter="Bedsheets")
     row = bedsheet_row(buf)
     assert (row["Variation"], row["Thread Count"]) == ("Double", "180")
     assert (row["Product Length"], row["Product Width"], row["Product Dimension Unit"]) == (100, 90, "inch")
@@ -206,7 +206,7 @@ def test_dimension_option_needs_the_stated_sides(size, variation, expected):
 
 
 def test_official_workbook_gets_no_extra_sheets():
-    buf, _, _ = MeeshoAdapter.generate_batch_export([bedsheet("BS-2", "Plain bedsheet")], category_filter="Bedsheets")
+    buf, _, _, _ = MeeshoAdapter.generate_batch_export([bedsheet("BS-2", "Plain bedsheet")], category_filter="Bedsheets")
     master = openpyxl.load_workbook(MeeshoAdapter.find_template("Bedsheets")["filepath"])
     assert openpyxl.load_workbook(buf).sheetnames == master.sheetnames
 
@@ -216,6 +216,25 @@ def test_category_without_official_template_is_refused():
     item["category"] = "Planters"
     problems = export_problems([item], category="Planters")
     assert [(p["sku"], p["field"]) for p in problems] == [("PL-1", "Template")]
+
+
+def test_items_without_a_template_are_skipped_and_reported():
+    planter = tshirt("PL-2", "Ceramic planter")
+    planter["category"] = "Planters"
+    buf, media_type, _, skipped = MeeshoAdapter.generate_batch_export([tshirt("TS-8", "Kept tee"), planter])
+    assert media_type.endswith("spreadsheetml.sheet")  # only Tshirts had a template, so one file
+    assert sheet_row(buf)["SKU ID"] == "TS-8"
+    assert [(p["sku"], p["category"], p["field"]) for p in skipped] == [("PL-2", "Planters", "Template")]
+    # Nothing is written anywhere for the skipped item, and it isn't asked for in the fill-in sheet
+    assert MeeshoAdapter.build_fill_in_sheet([tshirt("TS-8", "Kept tee"), planter]) is None
+
+
+def test_skipping_does_not_hide_data_gaps_in_other_categories():
+    planter = tshirt("PL-3", "Ceramic planter")
+    planter["category"] = "Planters"
+    problems = export_problems([tshirt("TS-9", "Gappy tee", **{"HSN ID": None}), planter], category=None)
+    assert {(p["sku"], p["field"]) for p in problems if p["blocking"]} == {("TS-9", "HSN ID")}
+    assert any(p["sku"] == "PL-3" and not p["blocking"] for p in problems)
 
 
 def test_ethnic_footwear_is_not_sent_to_the_sneakers_template():
@@ -255,21 +274,21 @@ def test_sole_material_and_weave_pattern_are_not_filled_from_other_attributes():
 
 
 def test_several_categories_always_zip():
-    buf, media_type, _ = MeeshoAdapter.generate_batch_export([tshirt("TS-7", "Zip tee"), bedsheet("BS-3", "Zip bedsheet")])
+    buf, media_type, _, _ = MeeshoAdapter.generate_batch_export([tshirt("TS-7", "Zip tee"), bedsheet("BS-3", "Zip bedsheet")])
     assert media_type == "application/zip"
     assert sorted(zipfile.ZipFile(buf).namelist()) == ["ListingPilot_Meesho_Bedsheets.xlsx", "ListingPilot_Meesho_Tshirts.xlsx"]
 
 
 def test_fill_in_sheet_round_trips_through_catalogue_import():
-    item = bedsheet("BS-4", "Round trip bedsheet", **{"HSN ID": None, "Color": None, "Manufacturer Pincode": None})
+    item = bedsheet("BS-4", "Round trip bedsheet", **{"HSN ID": None, "Color": None, "Quality": None})
     wb = openpyxl.load_workbook(MeeshoAdapter.build_fill_in_sheet([item]))
     ws = wb["Fill in"]
     headers = [c.value for c in ws[1]]
-    assert {"HSN ID", "Color", "Manufacturer Pincode"} <= set(headers)
+    assert {"HSN ID", "Color", "Quality"} <= set(headers)
     assert ws.data_validations.dataValidation  # dropdowns carry the template's own options
 
     # Seller fills the gaps, the sheet is imported, and the export now passes
-    filled = {"HSN ID": "63041910", "Color": "Blue", "Manufacturer Pincode": "641604"}
+    filled = {"HSN ID": "63041910", "Color": "Blue", "Quality": "Regular"}
     for name, value in filled.items():
         ws.cell(row=2, column=headers.index(name) + 1, value=value)
     out = io.BytesIO()
@@ -340,3 +359,104 @@ def test_meesho_prompt_and_template_copy_avoid_flagged_words(monkeypatch):
 
     bullets = AIService._fallback_generator(product, "Gulmohar Home", marketplace="meesho")["bullets"]
     assert not any(b.upper().startswith("CARE") for b in bullets)
+
+
+def _test_db_product(item):
+    db_gen = app.dependency_overrides[get_db]()
+    db = next(db_gen)
+    try:
+        product = db.query(Product).filter(Product.sku == item["sku"]).first()
+        if product:
+            db.delete(product)
+            db.commit()
+        product = Product(**{k: item[k] for k in ["sku", "name", "category", "brand", "price", "mrp", "stock", "attributes", "images"]})
+        db.add(product)
+        db.commit()
+        return product.id
+    finally:
+        db_gen.close()
+
+
+def test_missing_fields_endpoint_lists_what_the_export_needs():
+    pid = _test_db_product(bedsheet("BS-MF-1", "Missing fields bedsheet", **{"Bed Size": None, "Quality": None}))
+    res = client.get(f"/api/v1/drafts/meesho/missing-fields/{pid}")
+    assert res.status_code == 200
+    fields = {f["field"]: f for f in res.json()["fields"]}
+    assert set(fields) == {"Size", "Quality"}
+    assert fields["Size"]["attribute"] == "Bed Size"
+    assert fields["Size"]["options"] == ["Crib", "Double King", "Double Queen", "Single"]
+
+
+def test_saving_missing_fields_merges_only_valid_template_values():
+    pid = _test_db_product(bedsheet("BS-MF-2", "Saving fields bedsheet", **{"Bed Size": None, "Quality": None}))
+    url = f"/api/v1/drafts/meesho/missing-fields/{pid}"
+
+    # A value outside the template's options (or an unknown field) saves nothing at all
+    bad = client.put(url, json={"values": {"Bed Size": "double queen", "Quality": "Regular"}})
+    assert bad.status_code == 422
+    assert {f["field"] for f in client.get(url).json()["fields"]} == {"Size", "Quality"}
+    assert client.put(url, json={"values": {"Thread Colour": "Red"}}).status_code == 422
+
+    ok = client.put(url, json={"values": {"Bed Size": "Double Queen", "Quality": "Regular"}})
+    assert ok.status_code == 200, ok.text
+    body = ok.json()
+    assert body["product"]["attributes"]["Bed Size"] == "Double Queen"
+    assert body["product"]["attributes"]["Size"] == "90 x 100 in (double)"  # other attributes untouched
+    assert body["missing"]["fields"] == [] and body["missing"]["other"] == []
+
+
+def test_missing_fields_for_a_category_without_template():
+    item = tshirt("PL-MF-1", "Planter without template")
+    item["category"] = "Planters"
+    pid = _test_db_product(item)
+    assert client.get(f"/api/v1/drafts/meesho/missing-fields/{pid}").json()["template"] is None
+    assert client.put(f"/api/v1/drafts/meesho/missing-fields/{pid}", json={"values": {"Color": "Red"}}).status_code == 422
+
+
+def test_full_catalog_request_gets_a_zip_even_for_one_category():
+    buf, media_type, filename, _ = MeeshoAdapter.generate_batch_export([tshirt("TS-Z1", "Lone tee")], force_zip=True)
+    assert media_type == "application/zip" and filename.endswith(".zip")
+    assert zipfile.ZipFile(buf).namelist() == ["ListingPilot_Meesho_Tshirts.xlsx"]
+
+
+SELLER = {k: LEGAL[k] for k in LEGAL}
+
+
+@pytest.fixture
+def seller_details_in_settings():
+    from app.services.settings_service import SettingsService
+    SettingsService.update_seller_details(SELLER)
+    yield
+    SettingsService.update_seller_details({k: "" for k in SELLER})
+
+
+def test_seller_details_come_from_settings_when_the_product_has_none(seller_details_in_settings):
+    bare = bedsheet("BS-SD-1", "Settings bedsheet", **{k: None for k in LEGAL})
+    buf, _, _, _ = MeeshoAdapter.generate_batch_export([bare], category_filter="Bedsheets")
+    row = bedsheet_row(buf)
+    assert row["Manufacturer Name"] == "Rangrez Textiles" and row["Importer Pincode"] == "641604"
+    assert row["Country of Origin"] == "India"
+
+
+def test_a_products_own_value_beats_settings(seller_details_in_settings):
+    own = bedsheet("BS-SD-2", "Own maker bedsheet", **{"Manufacturer Name": "Sanganer Prints"})
+    buf, _, _, _ = MeeshoAdapter.generate_batch_export([own], category_filter="Bedsheets")
+    assert bedsheet_row(buf)["Manufacturer Name"] == "Sanganer Prints"
+
+
+def test_missing_seller_details_point_to_settings_not_each_product():
+    bare = bedsheet("BS-SD-3", "Bare bedsheet", **{k: None for k in LEGAL})
+    missing = MeeshoAdapter.missing_fields(bare)
+    assert set(missing["seller"]) == set(LEGAL) and missing["fields"] == []
+    headers = [c.value for c in openpyxl.load_workbook(MeeshoAdapter.build_fill_in_sheet([bare]))["Fill in"][1]]
+    assert not set(LEGAL) & set(headers)
+
+
+def test_seller_details_endpoint_validates_before_saving():
+    url = "/api/v1/settings/seller-details"
+    assert client.put(url, json={"Manufacturer Pincode": "64160"}).status_code == 422
+    assert client.put(url, json={"Brand": "Gulmohar"}).status_code == 422
+    assert client.get(url).json()["Manufacturer Pincode"] == ""  # nothing was saved
+    saved = client.put(url, json={"Manufacturer Name": " Rangrez Textiles "}).json()
+    assert saved["Manufacturer Name"] == "Rangrez Textiles"
+    client.put(url, json={"Manufacturer Name": ""})
