@@ -1190,6 +1190,7 @@ tbody td {
 .mp-needs_fix { background: var(--warn-soft); color: var(--warn); }
 .mp-ready_to_review { background: var(--purple-soft); color: var(--purple); }
 .mp-approved { background: var(--accent-soft); color: var(--accent); }
+.mp-exported { background: var(--purple-soft); color: var(--purple); }
 .mp-publishing { background: var(--mark-soft); color: var(--mark); }
 .mp-live { background: var(--good-soft); color: var(--good); }
 .mp-rejected { background: var(--bad-soft); color: var(--bad); }

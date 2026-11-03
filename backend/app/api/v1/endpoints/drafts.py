@@ -366,6 +366,14 @@ def update_draft(
     return draft.to_dict()
 
 
+def _refresh_rule_results(db: Session, draft: ListingDraft) -> None:
+    """Re-runs the rule checks on a draft against its product's current data (not committed here)."""
+    product = db.query(Product).filter(Product.id == draft.product_id).first()
+    draft.rule_results = RuleEngine.evaluate(product, draft={
+        "title": draft.title, "bullets": draft.bullets, "description": draft.description, "keywords": draft.keywords,
+    }, marketplace=draft.marketplace)
+
+
 # ── Approval & Rejection ────────────────────────────────────────────────────
 
 @router.post("/{draft_id}/approve", summary="Human approval for draft (WF-2)")
@@ -377,11 +385,15 @@ def approve_draft(
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
 
-    # Verify that the draft has no blocking errors
-    if draft.rule_results and draft.rule_results.get("has_errors"):
+    # Checked again against the product as it is now: its data (or Meesho category) may have changed since
+    _refresh_rule_results(db, draft)
+    errors = [i["message"] for i in draft.rule_results["issues"] if i["level"] == "error"]
+    if errors:
+        db.commit()  # keep the fresh results, so the editor shows what blocks approval
         raise HTTPException(
             status_code=400,
-            detail="Cannot approve a draft with unresolved rule check errors. Fix the issues first."
+            detail="Cannot approve until these are fixed: " + " ".join(errors[:5])
+                   + (f" (and {len(errors) - 5} more)" if len(errors) > 5 else "")
         )
 
     draft.is_approved = True
@@ -676,6 +688,12 @@ def export_meesho_catalog(
                        f"Fix them or take them out of this upload.",
             "problems": e.problems,
         })
+    # Exported, never "live": Meesho hasn't accepted anything until its processed file says so
+    now = datetime.now(timezone.utc)
+    for draft in _drafts_by_product(db, [item["product"] for item in items], "meesho").values():
+        draft.status = "exported"
+        draft.last_sync_at = now
+    db.commit()
     SettingsService.record_sync("meesho")
     return StreamingResponse(
         buf,
@@ -789,11 +807,16 @@ def save_meesho_missing_fields(product_id: int, payload: MeeshoFieldValues, db: 
     # A new dict, so SQLAlchemy sees the JSON column change
     kept = {k: v for k, v in (product.attributes or {}).items() if k.strip().lower() not in {r.lower() for r in removed}}
     product.attributes = {**kept, **clean}
+    # The Meesho draft's checks read these fields: refresh them so approval reflects the saved values
+    draft = _drafts_by_product(db, [product], "meesho").get((product.id, "meesho"))
+    if draft:
+        _refresh_rule_results(db, draft)
     db.commit()
     db.refresh(product)
     return {
         "product": ProductResponse.model_validate(product).model_dump(mode="json"),
         "missing": _meesho_missing(db, product),
+        "draft": draft.to_dict() if draft else None,
     }
 
 

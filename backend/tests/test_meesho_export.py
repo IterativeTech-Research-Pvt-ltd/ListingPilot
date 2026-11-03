@@ -159,7 +159,7 @@ def bedsheet(sku, title, **attr_overrides):
         "Net Weight (gms)": "650",
         "Net Quantity (N)": "1",
         # Facts the seller states for Meesho; none can be read off the measurements above
-        "Bed Size": "Double Queen",
+        "Meesho Size": "Double Queen",
         "Care Instructions": "Machine Wash Only",
         "Ideal For": "Adult",
         "Ideal Season": "Summer",
@@ -186,19 +186,19 @@ def test_bedsheet_measurements_come_from_the_stated_sizes():
     assert (row["Product Length"], row["Product Width"], row["Product Dimension Unit"]) == (100, 90, "inch")
     assert row["Dimensions (inches)"] == "90*100-(Double)"  # sides and Variation pick one option
     assert row["No. Of Pillow Covers"] == "2"
-    assert row["Size"] == "Double Queen"  # from Bed Size; Size itself holds the measurement
+    assert row["Size"] == "Double Queen"  # from Meesho Size; Size itself holds the measurement
     assert row["Color"] == "Blue"  # the seller's Meesho colour wins over the descriptive Colour
     assert row["Print or Pattern Type"] == "Floral"
 
 
 def test_bed_size_is_never_guessed_from_the_measurement():
     # "(double)" could be Double Queen or Double King; the export blocks and names the attribute to set
-    problems = export_problems([bedsheet("BS-6", "Unsized bedsheet", **{"Bed Size": None})], category="Bedsheets")
+    problems = export_problems([bedsheet("BS-6", "Unsized bedsheet", **{"Meesho Size": None})], category="Bedsheets")
     by_field = {p["field"]: p for p in problems if p["blocking"]}
-    assert set(by_field) == {"Size"}
-    buf = MeeshoAdapter.build_fill_in_sheet([bedsheet("BS-6", "Unsized bedsheet", **{"Bed Size": None})])
+    assert set(by_field) == {"Size"} and "add a 'Meesho Size' attribute" in by_field["Size"]["reason"]
+    buf = MeeshoAdapter.build_fill_in_sheet([bedsheet("BS-6", "Unsized bedsheet", **{"Meesho Size": None})])
     headers = [c.value for c in openpyxl.load_workbook(buf)["Fill in"][1]]
-    assert "Bed Size" in headers and "Size" not in headers  # importing it can't overwrite the measurement
+    assert "Meesho Size" in headers and "Size" not in headers  # importing it can't overwrite the measurement
 
 
 @pytest.mark.parametrize("size, variation, expected", [
@@ -425,11 +425,11 @@ def test_fill_in_sheet_round_trips_through_catalogue_import():
     wb = openpyxl.load_workbook(MeeshoAdapter.build_fill_in_sheet([item]))
     ws = wb["Fill in"]
     headers = [c.value for c in ws[1]]
-    assert {"HSN ID", "Color", "Quality"} <= set(headers)
+    assert {"Meesho HSN ID", "Meesho Color", "Meesho Quality"} <= set(headers)
     assert ws.data_validations.dataValidation  # dropdowns carry the template's own options
 
     # Seller fills the gaps, the sheet is imported, and the export now passes
-    filled = {"HSN ID": "63041910", "Color": "Blue", "Quality": "Regular"}
+    filled = {"Meesho HSN ID": "63041910", "Meesho Color": "Blue", "Meesho Quality": "Regular"}
     for name, value in filled.items():
         ws.cell(row=2, column=headers.index(name) + 1, value=value)
     out = io.BytesIO()
@@ -471,6 +471,9 @@ def test_export_endpoint_streams_the_selected_products():
     res = client.get(f"/api/v1/drafts/meesho/export?product_ids={pid}")
     assert res.status_code == 200, res.text
     assert sheet_row(io.BytesIO(res.content))["SKU ID"] == "TS-API-1"
+    # Exported, never "live": nothing is on Meesho until its processed file says so
+    draft = client.get(f"/api/v1/drafts/product/{pid}?marketplace=meesho").json()
+    assert draft["status"] == "exported" and draft["is_approved"] and draft["last_sync_at"]
 
 
 def test_readiness_and_export_check_the_selection_together():
@@ -491,12 +494,12 @@ def test_readiness_and_export_check_the_selection_together():
     assert client.get("/api/v1/drafts/meesho/export?product_ids=999999").status_code == 404  # never silently dropped
 
 
-def test_rule_engine_warns_on_words_meesho_flags():
+def test_words_meesho_flags_block_approval():
     product = Product(sku="X", name="x", category="Bedsheets", price=100, attributes={}, images=["a"], image_count=1)
     draft = {"title": "A cotton bedsheet set", "bullets": ["CARE — machine wash"], "description": "Soft comfort."}
     issues = RuleEngine.evaluate(product, draft, marketplace="meesho")["issues"]
     flagged = [i for i in issues if i["kind"] == "meesho_flagged_word"]
-    assert flagged and flagged[0]["level"] == "warning"
+    assert flagged and flagged[0]["level"] == "error"
     assert not [i for i in RuleEngine.evaluate(product, draft, marketplace="amazon")["issues"] if i["kind"] == "meesho_flagged_word"]
 
 
@@ -504,7 +507,7 @@ def test_required_attributes_match_whatever_case_the_import_stored():
     # The importer title-cases headers: a sheet's "Thread count" column is stored as "Thread Count"
     attrs = {"Material": "Cotton", "Size": "90 x 100 in", "Thread Count": "180 TC", "Care": "Machine wash"}
     product = Product(sku="X", name="x", category="Bedsheets", price=100, attributes=attrs, images=["a"], image_count=1)
-    issues = RuleEngine.evaluate(product, None, marketplace="meesho")["issues"]
+    issues = RuleEngine.evaluate(product, None, marketplace="amazon")["issues"]
     assert not [i for i in issues if i["kind"] == "attribute"]
 
 
@@ -542,29 +545,29 @@ def _test_db_product(item):
 
 
 def test_missing_fields_endpoint_lists_what_the_export_needs():
-    pid = _test_db_product(bedsheet("BS-MF-1", "Missing fields bedsheet", **{"Bed Size": None, "Quality": None}))
+    pid = _test_db_product(bedsheet("BS-MF-1", "Missing fields bedsheet", **{"Meesho Size": None, "Quality": None}))
     res = client.get(f"/api/v1/drafts/meesho/missing-fields/{pid}")
     assert res.status_code == 200
     fields = {f["field"]: f for f in res.json()["fields"]}
     assert set(fields) == {"Size", "Quality"}
-    assert fields["Size"]["attribute"] == "Bed Size"
+    assert fields["Size"]["attribute"] == "Meesho Size"
     assert fields["Size"]["options"] == ["Crib", "Double King", "Double Queen", "Single"]
 
 
 def test_saving_missing_fields_merges_only_valid_template_values():
-    pid = _test_db_product(bedsheet("BS-MF-2", "Saving fields bedsheet", **{"Bed Size": None, "Quality": None}))
+    pid = _test_db_product(bedsheet("BS-MF-2", "Saving fields bedsheet", **{"Meesho Size": None, "Quality": None}))
     url = f"/api/v1/drafts/meesho/missing-fields/{pid}"
 
     # A value outside the template's options (or an unknown field) saves nothing at all
-    bad = client.put(url, json={"values": {"Bed Size": "double queen", "Quality": "Regular"}})
+    bad = client.put(url, json={"values": {"Meesho Size": "double queen", "Meesho Quality": "Regular"}})
     assert bad.status_code == 422
     assert {f["field"] for f in client.get(url).json()["fields"]} == {"Size", "Quality"}
     assert client.put(url, json={"values": {"Thread Colour": "Red"}}).status_code == 422
 
-    ok = client.put(url, json={"values": {"Bed Size": "Double Queen", "Quality": "Regular"}})
+    ok = client.put(url, json={"values": {"Meesho Size": "Double Queen", "Meesho Quality": "Regular"}})
     assert ok.status_code == 200, ok.text
     body = ok.json()
-    assert body["product"]["attributes"]["Bed Size"] == "Double Queen"
+    assert body["product"]["attributes"]["Meesho Size"] == "Double Queen"
     assert body["product"]["attributes"]["Size"] == "90 x 100 in (double)"  # other attributes untouched
     assert body["missing"]["fields"] == [] and body["missing"]["other"] == []
 
@@ -690,7 +693,8 @@ def test_price_rules_from_the_template():
     ("https://images.unsplash.com/photo-1", False),
     ("http://localhost:8000/static/uploads/a.jpg", False),
     ("https://drive.google.com/file/d/abc/view", False),
-    ("https://ivpbdqxfqaloyxceufba.supabase.co/storage/v1/object/sign/product-images/a.jpg", False),
+    # The seller's own storage: Meesho accepted a Supabase signed link (3 Nov 2026)
+    ("https://ivpbdqxfqaloyxceufba.supabase.co/storage/v1/object/sign/product-images/a.jpg?token=t", True),
     ("front.jpg", False),
     ("https://example.com/front.jpg", True),
 ])
@@ -699,3 +703,165 @@ def test_image_links_must_be_usable_by_meesho(link, ok):
     item["images"] = [link]
     by_sku = MeeshoAdapter.check_items([item])
     assert (not [p for p in by_sku["TS-G9"] if p["field"] == "Image 1 (Front)"]) == ok
+
+
+PLANTER = "13367"  # Product Length/Breadth/Height + Product Unit (Cm, Inch...), Product Weight + Unit (G, Kg)
+PUJA = "12811"     # the same sides, and 'Weight' with 'Weight Unit' (g, kg)
+
+
+def measurements(template_id, **attrs):
+    return MeeshoAdapter._measurements(attrs, MeeshoAdapter._load_template(MeeshoAdapter.template_by_ref(template_id)))
+
+
+def test_one_stated_size_and_weight_fill_any_templates_measurement_columns():
+    m = measurements(PLANTER, Dimensions="6 x 6 x 5.5 in", Weight="1.2 kg")
+    assert (m["product length"], m["product breadth"], m["product height"], m["product unit"]) == (6, 6, 5.5, "Inch")
+    assert (m["product weight"], m["product weight unit"]) == (1.2, "Kg")
+    m = measurements(PUJA, Dimensions="20 x 15 x 10 cm", Weight="350 g (set)")
+    assert (m["product length"], m["product breadth"], m["product unit"]) == (20, 15, "cm")
+    assert (m["weight"], m["weight unit"]) == (350, "g")
+
+
+def test_a_weight_the_template_doesnt_list_is_left_to_the_seller():
+    # 480 g is neither a listed gram amount nor a listed kg amount (0.48); it's never rounded
+    m = measurements(PLANTER, Weight="480 g")
+    assert "product weight" not in m and "product weight unit" not in m
+
+
+def test_cm_columns_and_spelled_weights_use_the_stated_values():
+    tmpl = {"columns": {1: "Product Length (cm)", 2: "Product Dimensions (L x B x H) in cm", 3: "Weight"},
+            "dropdowns": {3: ["100gm", "1.5kg", "500gm"]}}
+    m = MeeshoAdapter._measurements({"Dimensions": "10 x 4 x 2 in", "Weight": "0.5 kg"}, tmpl)
+    assert m["product length (cm)"] == 25.4 and m["product dimensions (l x b x h) in cm"] == "25.4 x 10.2 x 5.1"
+    assert m["weight"] == "500gm"
+    assert MeeshoAdapter._measurements({"Weight": "1500 g"}, tmpl)["weight"] == "1.5kg"
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("6 x 6 x 5.5 in", ([6, 6, 5.5], "inch")),
+    ("90 x 100 in (double)", ([90, 100], "inch")),
+    ("30x20x10cm", ([30, 20, 10], "cm")),
+    ("Single, 60 x 90 in", ([60, 90], "inch")),
+    ("4 x 4 x 2.5 in each", ([4, 4, 2.5], "inch")),
+    ("3.5 x 3.5 in each pot, tray 11 x 4 in", None),  # two items: which is the product?
+    ("10 in diameter x 3.5 in depth", None),
+    ("18 in total hang length (Bell 4 in)", None),
+    ("M (Bust 38 in)", None),
+])
+def test_only_a_clearly_stated_size_is_read(text, expected):
+    from app.services.meesho_adapter import _stated_dimensions
+    assert _stated_dimensions(text) == expected
+
+
+def test_a_meesho_value_for_any_column_wins_over_the_descriptive_attribute():
+    tee = tshirt("TS-MV-1", "Meesho value tee", **{"Meesho Fabric": "Polyester", "Meesho Color": "White"})
+    row = sheet_row(MeeshoAdapter.generate_batch_export([tee], category_filter="Tshirts")[0])
+    assert (row["Fabric"], row["Color"]) == ("Polyester", "White")
+    assert MeeshoAdapter.seller_fields(MeeshoAdapter.find_template(TSHIRTS))["Meesho Fabric"]["field"] == "Fabric"
+
+
+def bedsheet_product(**attrs):
+    return Product(sku="JBP-F1", name="Indigo floral double bedsheet", category="Bedsheets", brand="Gulmohar Home",
+                   price=1299, attributes={"Meesho Category": "12776", "Material": "Cotton",
+                                           "Size": "90 x 100 in (double)", "Colour": "Indigo and white", **attrs})
+
+
+def fact_issues(product, **copy):
+    draft = {"title": "Gulmohar Home Indigo Floral Cotton Double Bedsheet", "bullets": [], "description": "", **copy}
+    return [i for i in RuleEngine.meesho_copy_issues(product, draft) if i["kind"] in ("unsupported_fact", "puffery")]
+
+
+def test_copy_stating_only_the_data_passes_the_fact_check():
+    assert fact_issues(bedsheet_product(), description="Cotton double bedsheet in indigo and white, 90 x 100 in.") == []
+
+
+@pytest.mark.parametrize("description, unsupported", [
+    ("Made of 100% pure cotton.", ["'100%'", "'pure'"]),
+    ("Measures 228 x 254 cm.", ["228", "254"]),  # a conversion the data doesn't state
+    ("A polyester bedsheet.", ["'Polyester'"]),  # the template's fabric, not this product's
+    ("Handmade by artisans.", ["'handmade'"]),
+    ("Machine wash cold.", ["'machine wash'"]),
+])
+def test_copy_inventing_facts_is_an_error(description, unsupported):
+    errors = " ".join(i["message"] for i in fact_issues(bedsheet_product(), description=description) if i["level"] == "error")
+    assert all(u in errors for u in unsupported), errors
+
+
+def test_a_claim_the_data_states_is_allowed_and_praise_only_warns():
+    product = bedsheet_product(Care="Machine wash cold", Material="100% cotton")
+    assert fact_issues(product, description="100% cotton. Machine wash cold.") == []
+    issues = fact_issues(bedsheet_product(), description="A premium, durable cotton bedsheet.")
+    assert [i["level"] for i in issues] == ["warning"] and "'premium', 'durable'" in issues[0]["message"]
+
+
+def test_meesho_approval_needs_the_templates_compulsory_fields():
+    attrs = bedsheet("BS-RQ-1", "x", Quality=None)["attributes"]
+    product = Product(sku="BS-RQ-1", name="Bedsheet", category="Bedsheets", brand="Gulmohar Home", price=499, mrp=799,
+                      stock=12, attributes=attrs, images=["https://example.com/a.jpg"], image_count=1)
+    issues = RuleEngine.evaluate(product, None, marketplace="meesho")["issues"]
+    assert [i["field"] for i in issues if i["kind"] == "attribute"] == ["Quality"]
+    product.attributes = {k: v for k, v in attrs.items() if k != "Meesho Category"}
+    issues = RuleEngine.evaluate(product, None, marketplace="meesho")["issues"]
+    errors = [i for i in issues if i["level"] == "error"]
+    assert [i["kind"] for i in errors] == ["meesho_category"] and "suggested:" in errors[0]["message"]
+
+
+def _groq(monkeypatch):
+    monkeypatch.setattr(settings, "AI_PROVIDER", "groq")
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk_test_key")
+
+
+INVENTED = {"title": "Gulmohar Home Pure Cotton Bedsheet", "bullets": ["FABRIC — Pure cotton"], "description": "Pure cotton.", "keywords": []}
+FACTUAL = {"title": "Gulmohar Home Indigo Floral Cotton Double Bedsheet", "bullets": ["FABRIC — Cotton"],
+           "description": "Cotton double bedsheet.", "keywords": []}
+
+
+def test_meesho_copy_inventing_facts_is_regenerated_with_the_failures_listed(monkeypatch):
+    _groq(monkeypatch)
+    fake = AsyncMock(side_effect=[dict(INVENTED), dict(FACTUAL)])
+    with patch.object(AIService, "_call_chat_completions", fake):
+        content = asyncio.run(AIService.generate_listing(bedsheet_product(), marketplace="meesho"))
+    assert content == FACTUAL and fake.call_count == 2
+    assert "'pure'" in fake.call_args_list[1].args[5] and "'pure'" not in fake.call_args_list[0].args[5]
+
+
+def test_regeneration_stops_after_two_retries(monkeypatch):
+    _groq(monkeypatch)
+    fake = AsyncMock(side_effect=lambda *a, **k: dict(INVENTED))
+    with patch.object(AIService, "_call_chat_completions", fake):
+        content = asyncio.run(AIService.generate_listing(bedsheet_product(), marketplace="meesho"))
+    assert fake.call_count == 3 and content["title"] == INVENTED["title"]  # left for the seller to fix
+
+
+def test_meesho_prompt_is_built_from_the_template_and_the_data_only(monkeypatch):
+    _groq(monkeypatch)
+    fake = AsyncMock(return_value={"title": "t"})
+    with patch.object(AIService, "_call_chat_completions", fake):
+        asyncio.run(AIService.generate_listing(bedsheet_product(), marketplace="meesho"))
+    system_prompt, user_prompt = fake.call_args.args[4], fake.call_args.args[5]
+    assert "Meesho category: Home & Kitchen > Home Furnishings > Bedding & Linen > Bedsheets" in user_prompt
+    assert "Shoppers filter this Meesho category by:" in user_prompt and "Fabric" in user_prompt
+    assert "No size, weight, dimension, price or marketplace name" in system_prompt
+    assert "Never convert units" in system_prompt and "Hinglish" in system_prompt
+    assert "12776" not in user_prompt and "₹" not in user_prompt  # neither the template id nor the price is copy
+    assert "flagship" not in system_prompt and "premium" not in user_prompt
+
+
+def test_template_copy_for_meesho_states_only_the_data():
+    product = bedsheet_product()
+    content = AIService._fallback_generator(product, "Gulmohar Home", marketplace="meesho")
+    assert "90 x 100" not in content["title"] and not content["title"].endswith("...")
+    assert not [i for i in RuleEngine.meesho_copy_issues(product, content) if i["level"] == "error"]
+    assert "Authentic" not in " ".join(content["bullets"]) and "verified" not in content["description"].lower()
+
+
+def test_approval_rechecks_the_product_as_it_is_now():
+    pid = _test_db_product(tshirt("TS-AP-1", "Approval tee", **{"Meesho Category": None}))
+    _with_meesho_draft(pid, "Gulmohar Home Black Cotton Tee", approved=False)  # stored without rule results
+    draft_id = client.get(f"/api/v1/drafts/product/{pid}?marketplace=meesho").json()["id"]
+    refused = client.post(f"/api/v1/drafts/{draft_id}/approve")
+    assert refused.status_code == 400 and "Meesho category" in refused.json()["detail"]
+    saved = client.put(f"/api/v1/drafts/meesho/missing-fields/{pid}", json={"values": {"Meesho Category": "10000"}})
+    assert saved.status_code == 200 and saved.json()["draft"]["rule_results"]["has_errors"] is False
+    approved = client.post(f"/api/v1/drafts/{draft_id}/approve")
+    assert approved.status_code == 200, approved.text

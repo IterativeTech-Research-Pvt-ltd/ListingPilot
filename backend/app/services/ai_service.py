@@ -31,8 +31,38 @@ from app.core.config import settings
 from app.models.product import Product
 from app.services.settings_service import SettingsService
 from app.services.amazon_ptd_service import AmazonPTDService
-from app.services.meesho_adapter import MEESHO_FLAGGED_WORDS
+from app.services.meesho_adapter import MeeshoAdapter, MEESHO_FLAGGED_WORDS, MEESHO_CATEGORY_ATTR
 from app.services.marketplace_limits import title_limit, keyword_byte_limit, prompt_target
+from app.services.rule_engine import RuleEngine
+
+# Meesho copy that fails the deterministic checks (RuleEngine.meesho_copy_issues) is regenerated with
+# the failures listed, at most this many times; what's left then shows as errors to fix before approval
+MEESHO_COPY_RETRIES = 2
+
+# Meesho copy is plain catalogue text for phone shoppers: facts from the product data, search terms in
+# the title and description (Meesho has no keyword field), nothing the template or QC rejects
+MEESHO_PROMPT_SYSTEM = """You write Meesho catalogue listings for ListingPilot from a seller's own product data.
+Meesho shoppers browse on phones and search in simple words, often Hinglish. Meesho has no keyword field, so the title and description must carry the words shoppers search for.
+
+Brand: {brand}
+Tone: {tone}. Plain, factual and easy to read.
+Guidance & Avoidance: {avoid_claims}
+
+Facts:
+- Use ONLY the facts in the product data: its name, category, attributes and notes. Every material, colour, pattern, size, count, use and feature you write must be stated there.
+- Write numbers and measurements exactly as the data gives them. Never convert units, round or add a number.
+- Never write "100%", "pure", "genuine", "handmade", washing instructions, certifications, warranty or any other claim unless the data states it in those words.
+- No praise words such as premium, luxury, durable, best, high quality or perfect.
+- No offers or policy claims such as free delivery, best seller, cheapest or money back.
+
+Listing:
+1. Title: At most {title_chars} characters including spaces. The brand if one is given, the product type in the words shoppers search for, then two or three stated attributes that tell this product apart (colour, material, pattern, audience, pack count). No size, weight, dimension, price or marketplace name. Normal capitalisation, never all caps.
+2. Bullets: 3 to 5 short bullets. Each starts with a short capitalised headline and an em dash, and states one fact from the data. Leave a bullet out rather than pad it.
+3. Description: 2 to 4 short plain-text sentences (no HTML, no lists) that restate the stated facts and name the product type the way shoppers search for it, including the Hindi or Hinglish name Indian shoppers commonly type for this product type if there is one.
+4. Keywords: 5 to 8 search phrases shoppers type for this exact product, built from its product type and stated attributes, including Hinglish ones. All keywords together must fit within {keyword_bytes} bytes (UTF-8).
+
+Output must be STRICTLY valid JSON with no conversational text or markdown code fences:
+{{"title": "...", "bullets": ["...", "..."], "description": "...", "keywords": ["...", "..."]}}"""
 
 PROMPT_SYSTEM = """You are ListingPilot's marketplace listing generation engine. 
 Your role is to transform raw master catalogue product data into high-converting, compliant, exhaustive tier-1 listings (Apple / flagship merchant caliber) for Amazon.in, Flipkart, and Meesho.
@@ -97,6 +127,9 @@ class AIService:
         audience = voice.get("target_audience", "Discerning shoppers seeking premium quality, reliability, and value")
         avoid_claims = voice.get("avoid_claims", "Avoid cheap promotional slang, fake certifications, or unverified claims")
 
+        if marketplace.lower() == "meesho":
+            return await cls._generate_meesho(product, brand, tone, avoid_claims)
+
         system_prompt = PROMPT_SYSTEM.format(
             brand=brand,
             tone=tone,
@@ -120,15 +153,62 @@ Target Marketplace: {marketplace.upper()}
 
 Category Schema Guidelines (Amazon SP-API PTD):
 {ptd_guidance}"""
-        if marketplace.lower() == "meesho":
-            flagged = ", ".join(f"'{w}'" for w in MEESHO_FLAGGED_WORDS)
-            user_prompt += f"""
+        return await cls._generate(system_prompt, user_prompt, product, marketplace, brand)
 
+    @classmethod
+    async def _generate_meesho(cls, product: Product, brand: str, tone: str, avoid_claims: str) -> Dict[str, Any]:
+        """
+        Meesho copy from the product's data and its Meesho template (category path and the fields shoppers
+        filter by). Copy failing the deterministic checks (invented facts, flagged words, Product Name
+        rules, length) is regenerated with the failures listed, up to MEESHO_COPY_RETRIES times.
+        """
+        tmpl, _ = MeeshoAdapter.resolve_item_template({"product": product})
+        system_prompt = MEESHO_PROMPT_SYSTEM.format(
+            brand=brand,
+            tone=tone,
+            avoid_claims=avoid_claims,
+            title_chars=prompt_target(title_limit("meesho")),
+            keyword_bytes=prompt_target(keyword_byte_limit("meesho")),
+        )
+        attrs = [f"- {k}: {v}" for k, v in (product.attributes or {}).items()
+                 if v is not None and str(v).strip() and str(k).strip().lower() != MEESHO_CATEGORY_ATTR.lower()]
+        filters = MeeshoAdapter.filter_fields(tmpl)
+        flagged = ", ".join(f"'{w}'" for w in MEESHO_FLAGGED_WORDS)
+        user_prompt = f"""Write the Meesho listing for:
+SKU: {product.sku}
+Product Name: {product.name}
+Seller's category: {product.category}
+Meesho category: {tmpl["breadcrumb"] if tmpl else "not chosen yet"}
+Brand: {brand}
+Attributes:
+{chr(10).join(attrs) if attrs else "- none provided (do not invent any)"}
+Notes: {product.description or ''}
+""" + (f"Shoppers filter this Meesho category by: {', '.join(filters)}. Mention the ones the attributes state.\n" if filters else "") + f"""
 Meesho rules:
 - Meesho's catalogue check flags the words {flagged} in listing text. Do not use them in any form.
-- Bullet 5 covers washing and maintenance; head it "WASH & MAINTENANCE", not "CARE INSTRUCTIONS".
-- Every product needs its own title; describe this product's own design, size and colour from its attributes."""
+- If the data states washing or maintenance, head that bullet "WASH & MAINTENANCE", never "CARE INSTRUCTIONS".
+- Every product needs its own title; tell this product apart by its own stated design, colour and material."""
 
+        content = await cls._generate(system_prompt, user_prompt, product, "meesho", brand)
+        for attempt in range(1, MEESHO_COPY_RETRIES + 1):
+            if cls.generation_source(content) == "template":
+                break
+            errors = [i["message"] for i in RuleEngine.meesho_copy_issues(product, content) if i["level"] == "error"]
+            if len(content.get("title") or "") > title_limit("meesho"):
+                errors.append(f"The title is {len(content['title'])} characters; Meesho allows {title_limit('meesho')}.")
+            if not errors:
+                break
+            print(f"[AIService] {product.sku}: Meesho copy failed {len(errors)} check(s); regenerating "
+                  f"({attempt}/{MEESHO_COPY_RETRIES})", flush=True)
+            retry_prompt = (user_prompt + "\n\nYour previous listing broke these rules:\n"
+                            + "\n".join(f"- {e}" for e in errors)
+                            + "\nWrite the whole listing again without these problems, using only the product data above.")
+            content = await cls._generate(system_prompt, retry_prompt, product, "meesho", brand)
+        return content
+
+    @classmethod
+    async def _generate(cls, system_prompt: str, user_prompt: str, product: Product, marketplace: str, brand: str) -> Dict[str, Any]:
+        """One listing from the configured provider (template copy when none is configured)."""
         # Check configured provider or dynamic settings credentials
         raw_creds = SettingsService.get_raw_settings().get("credentials", {})
         saved_key = (raw_creds.get("openrouter_api_key") or "").strip()
@@ -475,8 +555,8 @@ Meesho rules:
         attrs = product.attributes or {}
         mp = (marketplace or "amazon").lower()
         
-        # Extract specs dynamically
-        spec_items = [f"{k}: {v}" for k, v in attrs.items() if v]
+        # Extract specs dynamically (the Meesho category is a template id, not a product fact)
+        spec_items = [f"{k}: {v}" for k, v in attrs.items() if v and str(k).strip().lower() != MEESHO_CATEGORY_ATTR.lower()]
         main_spec = attrs.get("Material") or attrs.get("Fabric") or attrs.get("Processor") or attrs.get("Type") or ""
         size_spec = attrs.get("Size") or attrs.get("Dimensions") or attrs.get("Capacity") or attrs.get("Weight") or ""
         care_spec = attrs.get("Care") or attrs.get("Warranty") or attrs.get("Usage") or ""
@@ -491,63 +571,48 @@ Meesho rules:
             title_components.append(str(color_spec))
         if main_spec and str(main_spec).lower() not in p_name.lower():
             title_components.append(str(main_spec))
-        if size_spec and str(size_spec).lower() not in p_name.lower():
+        # Meesho keeps size, weight and dimensions out of Product Name
+        if size_spec and str(size_spec).lower() not in p_name.lower() and mp != "meesho":
             title_components.append(str(size_spec))
-            
-        title = " - ".join([str(c) for c in title_components if c])
+
+        # Attributes that don't fit are left out whole; only a name longer than the limit is cut, at a word
         max_title_len = title_limit(mp)
+        title_components = [str(c) for c in title_components if c]
+        while len(title_components) > 2 and len(" - ".join(title_components)) > max_title_len:
+            title_components.pop()
+        title = " - ".join(title_components)
         if len(title) > max_title_len:
-            title = title[:max_title_len - 3].rstrip() + "..."
+            title = title[:max_title_len + 1].rsplit(" ", 1)[0].rstrip(" -,")
 
-        # Bullets synthesized ONLY from verified product attributes (no fabricated claims)
-        bullets = []
-
-        # Bullet 1: Product Identity & Verified Pattern/Style
+        # Bullets restate product attributes only; a bullet with no attribute behind it is left out
+        bullets = [f"PRODUCT — {p_name} by {brand}."]
         if pattern_spec:
-            bullets.append(f"STYLE & DESIGN — Features authentic {pattern_spec} detailing on {p_name}.")
-        else:
-            bullets.append(f"PRODUCT OVERVIEW — Authentic {p_name} offered by {brand}.")
-
-        # Bullet 2: Material & Construction (only if verified)
+            bullets.append(f"STYLE & DESIGN — {pattern_spec}.")
         if main_spec:
-            bullets.append(f"MATERIAL & BUILD — Made with verified {main_spec} for consistent everyday use.")
+            bullets.append(f"MATERIAL — {main_spec}.")
         elif spec_items:
-            bullets.append(f"SPECIFICATIONS — Built to verified product specifications ({', '.join(spec_items[:3])}).")
-        else:
-            bullets.append(f"CATEGORY SPECIFICATIONS — Conforms to catalog standards for {category.lower()}.")
-
-        # Bullet 3: Dimensions / Sizing / Fit (only if verified)
+            bullets.append(f"SPECIFICATIONS — {', '.join(spec_items[:3])}.")
         if size_spec:
-            bullets.append(f"DIMENSIONS & SIZING — Configured as {size_spec}.")
+            bullets.append(f"DIMENSIONS & SIZING — {size_spec}.")
         elif color_spec:
             bullets.append(f"FINISH — Available in {color_spec}." if mp == "meesho" else f"FINISH & COLOR — Available in {color_spec}.")
-        else:
-            bullets.append(f"APPLICATION — Designed for standard utility within the {category.lower()} range.")
-
-        # Bullet 4: Inclusions & Verified Package Contents (never fabricated)
         if included_spec:
             bullets.append(f"PACKAGE CONTENTS — Includes {included_spec}.")
         elif occasion_spec:
-            bullets.append(f"RECOMMENDED USE — Ideal for {occasion_spec}.")
+            bullets.append(f"RECOMMENDED USE — For {occasion_spec}.")
         elif spec_items and len(spec_items) > 3:
             bullets.append(f"ADDITIONAL ATTRIBUTES — {', '.join(spec_items[3:6])}.")
-        else:
-            bullets.append(f"VERSATILE USE — Suitable for regular home and personal requirements.")
-
-        # Bullet 5: Care & Handling (only if verified)
         if care_spec:
             bullets.append(f"WASH & MAINTENANCE — {care_spec}." if mp == "meesho" else f"CARE & MAINTENANCE — {care_spec}.")
         elif attrs.get("Finish"):
             bullets.append(f"FINISH & TOUCH — Finished with {attrs.get('Finish')}.")
-        else:
-            bullets.append(f"HANDLING — Follow standard user instructions recommended for {category.lower()}.")
 
         # Description constructed strictly from actual specs
-        desc_parts = [f"Discover {brand}'s {p_name} in the {category} category."]
+        desc_parts = [f"{p_name} by {brand}, in {category}."]
         if spec_items:
-            desc_parts.append(f"Verified product attributes include: {', '.join(spec_items)}.")
+            desc_parts.append(f"Product details: {', '.join(spec_items)}.")
         if occasion_spec:
-            desc_parts.append(f"Designed for {occasion_spec}.")
+            desc_parts.append(f"For {occasion_spec}.")
         if care_spec:
             desc_parts.append(f"Maintenance guidance: {care_spec}.")
         desc = " ".join(desc_parts)
@@ -555,9 +620,7 @@ Meesho rules:
         keywords = [
             category.lower(),
             p_name.lower()[:30],
-            f"{category.lower()} for daily use",
             f"{brand.lower()} {category.lower()}",
-            "verified specs"
         ]
 
         draft_res = {

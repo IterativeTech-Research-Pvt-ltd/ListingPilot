@@ -18,7 +18,7 @@
 | Meesho values silently snapped to dropdown options | Exact or high-confidence matches only; low-confidence snaps go to a review list; NEVER snap Brand                       |
 | Meesho image cells use local/Unsplash URLs         | Image ZIP export + paste-back of Meesho panel-generated links; block export without Image 1                             |
 | Style ID = SKU, Group ID empty                     | Style ID = family+colour once variants exist; Group ID per design family                                                |
-| Meesho required fields from 6 hardcoded categories | Use the template's own "\* Compulsory Field" markers                                                                    |
+| Meesho required fields from 6 hardcoded categories | Use the template's own "\* Compulsory Field" markers (done 3 Nov: export and approval)                                |
 | Meesho export ignores approval and truncates titles | Export only approved drafts; block (never cut) titles over 100 characters                                              |
 | Silent SQLite fallback                             | Explicit DB via env; fail loudly if unreachable                                                                         |
 | Dashboard fakes success on failure                 | Remove; demo data only behind explicit DEMO_MODE flag                                                                   |
@@ -31,7 +31,7 @@
 3. **Photos:** the seller adds real photos as a link or an uploaded PNG/JPEG/JPG file. Stored in free object storage (Supabase Storage proposed). Image 1 required; images 2–4 optional.
 4. **Copy:** AI Meesho copy within limits (prompt asks for 90 % of each limit); edit; approve.
 5. **Upload selection:** the seller adds or removes products from the current bulk upload; each shows ready / its problems.
-6. **Export gate (all-or-nothing):** the file is produced only when every selected product passes: approved draft, title ≤ 100 characters, no Meesho-flagged words, no weight/dimension/price/portal names in Product Name, Meesho Price < MRP, Wrong/Defective price < Meesho Price, every compulsory field filled with exact template values, Image 1 from Meesho's uploader.
+6. **Export gate (all-or-nothing):** the file is produced only when every selected product passes: approved draft, title ≤ 100 characters, no Meesho-flagged words, no weight/dimension/price/portal names in Product Name, Meesho Price < MRP, Wrong/Defective price < Meesho Price, every compulsory field filled with exact template values, Image 1 a usable web link (Meesho's uploader or the seller's own storage; never Drive, stock or local).
 7. **Images for Meesho:** ZIP of the photos as JPEG/RGB `SKU_slot.jpg`; the seller uploads it in the panel's image uploader and pastes the links back; links matched to SKUs.
 8. **Delivery:** ZIP with one filled template per category plus an upload checklist (category path to pick per file, counts, reminder to return the processed file). Successful export marks drafts "exported", never "live".
 9. **Feedback:** import Meesho's processed file (ERROR STATUS / ERROR MESSAGE per row), store the reason on each draft, produce a correction sheet with only the failed rows.
@@ -52,7 +52,7 @@ AI image generation, Shipping Optimiser, returns advisor, full Product Flags eng
 | Dates     | Work                                                                                                                         |
 | --------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | 3 Nov     | **Done 3 Nov:** Meesho category picker (template id, breadcrumb, category defaults); storage decision (Supabase Storage)     |
-| 4 Nov     | **Done 3 Nov:** upload selection, readiness per product, all-or-nothing export gate                                          |
+| 4 Nov     | **Done 3 Nov:** upload selection, readiness per product, all-or-nothing export gate; Meesho copy from the template and data with a fact check and up to 2 regenerations; size/weight columns for any template; `Meesho <column>` values; drafts marked "exported" |
 | 4–5 Nov   | Photo intake (link or file → storage), JPEG/RGB image ZIP, link paste-back, upload checklist                                 |
 | 5 Nov     | Seller: Seller Details, real attributes and photos, Meesho categories; regenerate and approve Meesho drafts                  |
 | 6 Nov     | MILESTONE first real Meesho upload (at least 5 products)                                                                     |

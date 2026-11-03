@@ -563,10 +563,15 @@ export default function ListingPilotPhase3App() {
   };
 
   // The server's copy after a save elsewhere (e.g. Meesho required fields), everywhere it's shown
-  const applySavedProduct = (saved) => {
+  const applySavedProduct = (saved, savedDraft) => {
     setProducts(prev => prev.map(p => p.id === saved.id ? saved : p));
     setSelectedProduct(prev => prev?.id === saved.id ? saved : prev);
     setDrawerProduct(prev => prev?.id === saved.id ? saved : prev);
+    // Its checks were rerun on the saved values, so approval reflects them
+    if (savedDraft) {
+      setDrafts(prev => prev.map(d => d.id === savedDraft.id ? savedDraft : d));
+      setSelectedDraft(prev => prev?.id === savedDraft.id ? savedDraft : prev);
+    }
   };
 
   // ── Product Details Inline Editor ──────────────────────────────────────────
@@ -1173,7 +1178,7 @@ export default function ListingPilotPhase3App() {
             <span style={{ color: "var(--good)" }}>Multi-channel</span>
           </div>
           <div className="kpi-val">
-            {drafts.filter(d => d.status === "approved" || d.status === "live").length}
+            {drafts.filter(d => d.status === "approved" || d.status === "exported" || d.status === "live").length}
           </div>
           <div className="kpi-meta">
             <span style={{ color: "var(--good)" }}>✓ {drafts.filter(d => d.status === "live").length} live listings</span>
@@ -1437,6 +1442,7 @@ export default function ListingPilotPhase3App() {
                   { key: "all", label: "All" },
                   { key: "draft", label: "Draft" },
                   { key: "approved", label: "Approved" },
+                  { key: "exported", label: "Exported" },
                   { key: "live", label: "Live" }
                 ].map(s => (
                   <button 
@@ -1629,7 +1635,7 @@ export default function ListingPilotPhase3App() {
                   <button 
                     className="btn btn-sm btn-success"
                     onClick={handleApproveDraft}
-                    disabled={isApproving || selectedDraft?.rule_results?.has_errors || selectedDraft?.status === "approved" || selectedDraft?.status === "live"}
+                    disabled={isApproving || selectedDraft?.rule_results?.has_errors || selectedDraft?.status === "approved" || selectedDraft?.status === "exported" || selectedDraft?.status === "live"}
                     title={selectedDraft?.rule_results?.has_errors ? "Fix rule violations before approval" : "Certify listing"}
                   >
                     {isApproving ? "Approving..." : selectedDraft?.is_approved ? "✓ Approved" : "✓ Approve Listing"}
@@ -3575,7 +3581,7 @@ export default function ListingPilotPhase3App() {
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                           <span className={`mp-badge ${badgeClass}`}>{mpLabel}</span>
                           <span className="mp-status">
-                            {match ? (match.status === "approved" ? "Approved" : match.status === "live" ? "Live" : "Draft") : "Ready"}
+                            {match ? (match.status === "approved" ? "Approved" : match.status === "exported" ? "Exported" : match.status === "live" ? "Live" : "Draft") : "Ready"}
                           </span>
                         </div>
                         <div style={{ fontSize: "0.72rem", color: "var(--muted)", marginTop: "4px" }}>
@@ -3894,7 +3900,7 @@ export default function ListingPilotPhase3App() {
         </div>
       )}
 
-      <MeeshoUploadPanel open={showMeeshoUpload} onClose={() => setShowMeeshoUpload(false)} notify={showToast} />
+      <MeeshoUploadPanel open={showMeeshoUpload} onClose={() => setShowMeeshoUpload(false)} notify={showToast} onExported={fetchAllData} />
 
       {/* ── Meesho Category Templates & Taxonomy Modal ────────────────────── */}
       {showMeeshoTemplatesModal && (

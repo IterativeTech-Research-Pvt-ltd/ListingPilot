@@ -43,7 +43,7 @@ async function errorText(res) {
 
 // One Meesho bulk upload: the seller picks which catalogue products go in it. The file is made only
 // when every picked product is ready (all or nothing); a product that isn't is fixed or taken out.
-export default function MeeshoUploadPanel({ open, onClose, notify }) {
+export default function MeeshoUploadPanel({ open, onClose, notify, onExported }) {
   const [rows, setRows] = useState(null);
   const [checkedWith, setCheckedWith] = useState("all");
   const [loadError, setLoadError] = useState("");
@@ -122,7 +122,8 @@ export default function MeeshoUploadPanel({ open, onClose, notify }) {
         throw new Error(message);
       }
       const name = await download(res, `ListingPilot_Meesho_${new Date().toISOString().slice(0, 10)}.zip`);
-      notify && notify("Meesho Upload File Ready 📦", `${name}: ${picked.length} product(s). Upload each file under its category in the supplier panel's Bulk Catalog Upload.`, "success");
+      notify && notify("Meesho Upload File Ready 📦", `${name}: ${picked.length} product(s), now marked Exported (not live until Meesho accepts them). Upload each file under its category in the supplier panel's Bulk Catalog Upload.`, "success");
+      onExported && onExported();
     } catch (err) {
       notify && notify("Meesho Export Blocked", err.message, "error");
     } finally {

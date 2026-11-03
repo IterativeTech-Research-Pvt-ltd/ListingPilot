@@ -38,9 +38,9 @@ MEESHO_CATEGORIES_FILE = ROOT_DIR / "docs" / "meesho" / "categories" / "meeshoCa
 # "Indigo and white" must not become "White"): only exact or numeric matches are accepted
 EXACT_MATCH_COLUMNS = ("hsn", "gst", "country", "group id", "color", "colour")
 
-# Template columns whose name clashes with an attribute that means something else: the Bedsheets
-# "Size" dropdown (Double Queen, Single...) is read from "Bed Size", since "Size" holds the measurement
-SELLER_ATTRIBUTE_FOR_COLUMN = {("bedsheets", "size"): "Bed Size"}
+# The seller's exact Meesho value for any template column is saved as "Meesho <column>" ("Meesho Size"),
+# so it wins over, and never overwrites, a descriptive attribute of the same name ("Size: 90 x 100 in")
+MEESHO_ATTR_PREFIX = "Meesho "
 
 # Product attribute holding the seller's Meesho category for the product: Meesho's template id
 # (as saved by the category picker) or its breadcrumb (as typed in an imported sheet)
@@ -70,17 +70,39 @@ PRODUCT_NAME_RULES = [
     ("a price", r"₹|\brs\.?\s*\d|\binr\s*\d|\b\d+\s*(?:rs|rupees)\b"),
     ("another marketplace's name", r"\b(?:amazon|flipkart|myntra|ajio|snapdeal|nykaa|jiomart|tata\s*cliq|shopsy|glowroad)\b"),
 ]
-# Image links Meesho can't use: the template asks for links from its own Images Bulk Upload and
-# refuses Google Drive; stock photos and our own storage or machine aren't the seller's Meesho images
+# Image links Meesho can't use: it refuses Google Drive, stock photos aren't the seller's product, and
+# a local address can't be fetched. Links to the seller's own storage work (a Supabase signed link was
+# accepted by Meesho, 3 Nov 2026).
 UNUSABLE_IMAGE_LINKS = [
     ("a Google Drive", r"\b(?:drive|docs)\.google\.com\b"),
     ("a stock-photo", r"\b(?:unsplash\.com|pexels\.com|pixabay\.com|shutterstock\.com|istockphoto\.com)\b"),
     ("a local", r"://(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|192\.168\.)"),
-    ("a ListingPilot storage", r"\.supabase\.co/storage/"),
 ]
 
 # Meesho's catalogue QC flags these words in descriptions (seen in processed upload files)
 MEESHO_FLAGGED_WORDS = ("care", "comfort", "colors")
+
+# Units a stated measurement may use, by the names the templates' unit dropdowns list
+LENGTH_UNITS = {"cm": "cm", "mm": "mm", "in": "inch", "inch": "inch", "inches": "inch", '"': "inch",
+                "ft": "ft", "feet": "ft", "foot": "ft", "m": "m", "meter": "m", "meters": "m", "metre": "m", "metres": "m"}
+CM_PER_UNIT = {"cm": 1.0, "mm": 0.1, "inch": 2.54, "ft": 30.48, "m": 100.0}
+# How unit dropdowns spell each unit ('G', 'gm', 'Kg', 'Inch', 'Cm')
+UNIT_SPELLINGS = {"g": ("g", "gm", "gms", "gram", "grams"), "kg": ("kg", "kgs"), "inch": ("inch", "inches", "in"),
+                  "cm": ("cm",), "mm": ("mm",), "ft": ("ft", "feet"), "m": ("m", "meter", "metre")}
+_MEASURE = r"(\d+(?:\.\d+)?)\s*[x×*]\s*(\d+(?:\.\d+)?)(?:\s*[x×*]\s*(\d+(?:\.\d+)?))?\s*(cm|mm|inches|inch|in|\"|feet|foot|ft|metres|metre|meters|meter|m)(?![a-z])"
+_WEIGHT = r"(\d+(?:\.\d+)?)\s*(kgs|kg|grams|gram|gms|gm|g)(?![a-z])"
+# The template columns filled from one stated size and weight (_measurements), in any template
+MEASUREMENT_COLUMNS = (
+    "product length", "product breadth", "product width", "product height", "product unit", "product dimension unit",
+    "product length (cm)", "product breadth (cm)", "product width (cm)", "product height (cm)",
+    "product dimensions (l x b x h) in cm", "product weight", "product weight unit", "weight unit", "weight",
+)
+
+# Template columns whose options aren't facts a listing states (identifiers, tax, legal, brand lists), and
+# options that read as ordinary words in copy; the rest of a template's options are its fact vocabulary
+NON_FACT_COLUMNS = ("brand", "hsn", "gst", "country", "group id", "net quantity", "generic name", "image", "unit")
+NON_FACT_OPTIONS = {"other", "others", "na", "n/a", "none", "not applicable", "yes", "no", "regular", "standard",
+                    "normal", "daily", "everyday", "basic", "classic", "modern", "home", "free size", "one size", "onesize"}
 
 
 class MeeshoExportIncomplete(Exception):
@@ -151,6 +173,41 @@ def _dimension_option(size_text: Optional[str], variation: Optional[str], option
     if len(fits) > 1 and variation:
         fits = [f for f in fits if f[1] == variation.strip().lower()]
     return fits[0][0] if len(fits) == 1 else None
+
+
+def _stated_dimensions(text: Optional[str]) -> Optional[Tuple[List[float], str]]:
+    """
+    ([sides], unit) from the one 'A x B [x C] unit' measurement a text states: '6 x 6 x 5.5 in',
+    '90 x 100 in (double)'. None when it states none or several ('3.5 x 3.5 in each pot, tray 11 x 4 in')
+    or only partial ones ('10 in diameter x 3.5 in depth'): which side is which can't be read off those.
+    """
+    found = re.findall(_MEASURE, text or "", flags=re.IGNORECASE)
+    if len(found) != 1:
+        return None
+    *sides, unit = found[0]
+    return [float(s) for s in sides if s], LENGTH_UNITS[unit.lower()]
+
+
+def _stated_weight(text: Optional[str]) -> Optional[Tuple[float, str]]:
+    """(amount, 'g' or 'kg') from the one weight a text states ('480 g', '350 g (set)', '1.2 kg'); None otherwise."""
+    found = re.findall(_WEIGHT, text or "", flags=re.IGNORECASE)
+    if len(found) != 1:
+        return None
+    amount, unit = found[0]
+    return float(amount), "kg" if unit.lower().startswith("kg") else "g"
+
+
+def _unit_option(unit: str, options: List[str]) -> Optional[str]:
+    """A unit as the template's dropdown spells it ('g' -> 'G' or 'gm'); the unit itself when the column is free text."""
+    if not options:
+        return unit
+    spellings = UNIT_SPELLINGS.get(unit, (unit,))
+    return next((o for o in options if o.strip().lower() in spellings), None)
+
+
+def _num_value(x: float) -> Any:
+    """100.0 -> 100, 5.5 -> 5.5: a measurement written as the seller would type it."""
+    return int(x) if float(x).is_integer() else x
 
 
 class MeeshoAdapter:
@@ -631,9 +688,61 @@ class MeeshoAdapter:
         }
 
     @classmethod
-    def _seller_attribute(cls, category: str, col_name: str) -> str:
-        """Attribute a column is read from: the column's own name unless that name means something else."""
-        return SELLER_ATTRIBUTE_FOR_COLUMN.get((category.strip().lower(), col_name.strip().lower()), col_name)
+    def _seller_attribute(cls, col_name: str) -> str:
+        """The attribute the seller's exact value for a template column is saved under: 'Meesho Size' for Size."""
+        name = f"{MEESHO_ATTR_PREFIX}{col_name.strip()}"
+        # A column called 'Category' must not read or overwrite the product's Meesho category choice
+        return f"{name} Value" if name.lower() == MEESHO_CATEGORY_ATTR.lower() else name
+
+    @classmethod
+    def _measurements(cls, attrs: Dict[str, Any], template_info: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Values for the size and weight columns most templates require (MEASUREMENT_COLUMNS), from the one
+        measurement a 'Dimensions' (else 'Size') attribute states and the one weight a 'Weight' attribute
+        states. Two sides are length (the longer) and width; three are length, breadth and height as
+        written. Units are spelled as the template's dropdown lists them; '(cm)' columns get the stated
+        size in cm. Nothing is written for a column the stated values don't settle.
+        """
+        options = {name.strip().lower(): template_info.get("dropdowns", {}).get(idx, [])
+                   for idx, name in template_info.get("columns", {}).items()}
+        out: Dict[str, Any] = {}
+
+        dims = _stated_dimensions(_attr(attrs, "Dimensions", "Product Dimensions", "Size"))
+        if dims:
+            sides, unit = dims
+            length, width, height = (max(sides), min(sides), None) if len(sides) == 2 else sides
+            in_cm = {k: round(v * CM_PER_UNIT[unit], 1) for k, v in (("length", length), ("width", width), ("height", height)) if v is not None}
+            for side, value in (("length", length), ("breadth", width), ("width", width), ("height", height)):
+                if value is not None:
+                    out[f"product {side}"] = _num_value(value)
+                    out[f"product {side} (cm)"] = _num_value(in_cm["width" if side == "breadth" else side])
+            for col in ("product unit", "product dimension unit"):
+                out[col] = _unit_option(unit, options.get(col, []))
+            if height is not None:
+                out["product dimensions (l x b x h) in cm"] = " x ".join(_fmt_num(in_cm[k]) for k in ("length", "width", "height"))
+
+        weight = _stated_weight(_attr(attrs, "Product Weight", "Weight"))
+        if weight:
+            amount, unit = weight
+            grams = round(amount * 1000, 3) if unit == "kg" else amount
+            other = (grams, "g") if unit == "kg" else (round(grams / 1000, 6), "kg")
+            for col, unit_col in (("product weight", "product weight unit"), ("weight", "weight unit")):
+                value_opts = options.get(col, [])
+                spelled = {o.strip().lower(): o for o in value_opts}
+                if any(re.fullmatch(r"[\d.]+\s*(?:gm|kg|ml)", o) for o in spelled):
+                    # Amount and unit in one option ('500gm', '1.5kg')
+                    out[col] = next((spelled[s] for s in (f"{_fmt_num(grams)}gm", f"{_fmt_num(other[0] if unit == 'g' else amount)}kg")
+                                     if s in spelled), None)
+                    continue
+                if unit_col not in options:
+                    continue  # a bare number without its unit column would be ambiguous
+                # The stated unit when the template lists that amount, else the same weight in the other unit
+                fits = [(a, u) for a, u in ((amount, unit), other)
+                        if not value_opts or cls._match_dropdown_option(_fmt_num(a), value_opts) is not None]
+                if fits:
+                    out[col] = _num_value(fits[0][0])
+                    out[unit_col] = _unit_option(fits[0][1], options[unit_col])
+        return out
 
     @classmethod
     def _template_value(cls, cn: str, col_name: str, row: Dict[str, Any], category: str) -> Any:
@@ -645,16 +754,18 @@ class MeeshoAdapter:
             return None
 
         attrs = row["attrs"]
-        # An attribute named exactly like the column wins, so sellers can set Meesho values directly
-        seller_attr = cls._seller_attribute(category, col_name)
-        direct = _attr(attrs, seller_attr)
+        # The seller's exact Meesho value ('Meesho Size') wins, then an attribute named like the column
+        own = _attr(attrs, cls._seller_attribute(col_name))
+        direct = own if own is not None else _attr(attrs, col_name)
         if "net weight" in cn:
             return _grams(direct or _attr(attrs, "Net Weight (gms)", "Net Weight", "Weight"))
-        if direct is not None or seller_attr != col_name:
+        if direct is not None:
             return direct
         # The seller's legal details from Settings, for products that don't carry their own
         if row.get("seller_details", {}).get(col_name):
             return row["seller_details"][col_name]
+        if cn in MEASUREMENT_COLUMNS:
+            return row.get("measures", {}).get(cn)
 
         size_text = _attr(attrs, "Size", "Dimensions")
         included = _attr(attrs, "Included Components", "Included", "Sales Package", "Package Contents", "In The Box")
@@ -703,15 +814,6 @@ class MeeshoAdapter:
         if ("length" in cn or "width" in cn) and "cm" in cn:
             dims = _inch_dims(size_text)
             return round((dims[0] if "length" in cn else dims[1]) * 2.54) if dims else None
-        # Newer templates: the stated inch size as-is, with its unit in a separate column
-        if cn in ("product length", "product width"):
-            dims = _inch_dims(size_text)
-            if not dims:
-                return None
-            side = dims[0] if "length" in cn else dims[1]
-            return int(side) if side.is_integer() else side
-        if cn == "product dimension unit":
-            return "inch" if _inch_dims(size_text) else None
         if cn == "dimensions (inches)":
             return size_text
         # Exact columns only: 'Weave Pattern' (twill, oxford) is not the print pattern
@@ -859,6 +961,7 @@ class MeeshoAdapter:
             target_row = 5 + idx
             row = cls._row_inputs(item)
             row["seller_details"] = seller_details
+            row["measures"] = cls._measurements(row["attrs"], template_info)
             written: Dict[str, Any] = {}
 
             for col_idx, col_name in col_map.items():
@@ -879,7 +982,7 @@ class MeeshoAdapter:
                         problems.append({
                             "sku": row["sku"], "category": category, "field": col_name,
                             "reason": f"'{val}' is not one of the template's options; add a "
-                                      f"'{cls._seller_attribute(category, col_name)}' attribute set to one of them",
+                                      f"'{cls._seller_attribute(col_name)}' attribute set to one of them",
                             "blocking": col_idx in compulsory_cols,
                         })
                     val = matched
@@ -1020,7 +1123,7 @@ class MeeshoAdapter:
             for col_idx, col_name in tmpl["columns"].items():
                 if col_name not in field_order:
                     field_order.append(col_name)
-                attr_names.setdefault(col_name, cls._seller_attribute(tmpl["category"], col_name))
+                attr_names.setdefault(col_name, cls._seller_attribute(col_name))
                 if col_idx in tmpl.get("dropdowns", {}):
                     options.setdefault(col_name, tmpl["dropdowns"][col_idx])
             try:
@@ -1045,7 +1148,8 @@ class MeeshoAdapter:
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Fill in"
-        # Headers are the attribute names the export reads back, e.g. "Bed Size" for Bedsheets' Size
+        # Headers are the attribute names the export reads back ("Meesho Size"), so importing the sheet
+        # never overwrites a descriptive attribute ("Size: 90 x 100 in")
         headers = ["SKU", "Product Name", "Category", *[attr_names.get(f, f) for f in fields], *image_fields]
         ws.append(headers)
         bold = Font(name="Arial", size=10, bold=True)
@@ -1113,9 +1217,43 @@ class MeeshoAdapter:
             return {}
         dropdowns = tmpl.get("dropdowns", {})
         return {
-            cls._seller_attribute(tmpl["category"], name): {"field": name, "options": dropdowns.get(idx, [])}
+            cls._seller_attribute(name): {"field": name, "options": dropdowns.get(idx, [])}
             for idx, name in tmpl["columns"].items()
         }
+
+    @classmethod
+    def fact_vocabulary(cls, tmpl: Optional[Dict[str, Any]]) -> List[str]:
+        """
+        The template's own words for facts a listing can state: the options of its fabric, colour,
+        pattern, size, feature... dropdowns (not brands, tax codes or countries, nor options like
+        'Others' that read as ordinary words). Copy naming one the product data doesn't state is
+        inventing it, whatever the category.
+        """
+        if not tmpl:
+            return []
+        if "fact_vocabulary" not in tmpl:
+            words = set()
+            for idx, opts in tmpl.get("dropdowns", {}).items():
+                name = tmpl["columns"].get(idx, "").strip().lower()
+                if any(k in name for k in NON_FACT_COLUMNS):
+                    continue
+                for opt in opts:
+                    o = opt.strip()
+                    if o.lower() not in NON_FACT_OPTIONS and len(re.findall(r"[A-Za-z]", o)) >= 3 and len(o) <= 40:
+                        words.add(o)
+            tmpl["fact_vocabulary"] = sorted(words)
+        return tmpl["fact_vocabulary"]
+
+    @classmethod
+    def filter_fields(cls, tmpl: Optional[Dict[str, Any]], limit: int = 15) -> List[str]:
+        """The template's compulsory dropdown columns shoppers filter by (Fabric, Color, Pattern...), for the copy prompt."""
+        if not tmpl:
+            return []
+        compulsory = set(tmpl.get("compulsory_columns", []))
+        names = [name for idx, name in tmpl["columns"].items()
+                 if idx in compulsory and idx in tmpl.get("dropdowns", {})
+                 and not any(k in name.lower() for k in (*NON_FACT_COLUMNS, "variation"))]
+        return names[:limit]
 
     @classmethod
     def missing_fields(cls, item: Dict[str, Any]) -> Dict[str, Any]:

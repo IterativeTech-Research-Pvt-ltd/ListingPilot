@@ -54,7 +54,8 @@ export default function MeeshoRequiredFields({ product, onSaved, notify }) {
       throw new Error(errors ? errors.join("; ") : (body?.detail?.message || body?.detail || `HTTP ${res.status}`));
     }
     setMissing(body.missing);
-    onSaved && onSaved(body.product);
+    // body.draft: the product's Meesho draft with its checks rerun on the saved values
+    onSaved && onSaved(body.product, body.draft);
     return body;
   };
 
@@ -150,7 +151,7 @@ export default function MeeshoRequiredFields({ product, onSaved, notify }) {
         {missing.fields.map(f => (
           <div key={f.attribute} className="draft-field" style={{ margin: 0 }}>
             <label title={f.reason} style={{ fontSize: "0.74rem" }}>
-              {f.field}{f.attribute !== f.field ? ` (saved as "${f.attribute}")` : ""}
+              {f.field}
             </label>
             {f.options.length > 0 ? (
               <select

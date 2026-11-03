@@ -1,12 +1,42 @@
 import re
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from app.models.product import Product
 from app.services.template_generator import CATEGORIES_INFO
 from app.services.settings_service import SettingsService
-from app.services.meesho_adapter import MEESHO_FLAGGED_WORDS
+from app.services.meesho_adapter import (
+    MeeshoAdapter, MEESHO_FLAGGED_WORDS, PRODUCT_NAME_RULES, MEESHO_CATEGORY_ATTR,
+)
 from app.services.marketplace_limits import title_limit
 
 HTML_TAG_PATTERN = re.compile(r"<[^>]+>", re.IGNORECASE)
+
+# Claims a listing may make only when the product data states them in those words
+CLAIM_TERMS = (
+    "100%", "pure", "genuine", "authentic", "original", "handmade", "hand made", "handcrafted", "hand crafted",
+    "organic", "eco friendly", "sustainable", "hypoallergenic", "anti bacterial", "antibacterial", "anti microbial",
+    "waterproof", "water resistant", "rust proof", "rustproof", "fade proof", "fade resistant", "colourfast",
+    "colorfast", "shrink proof", "non toxic", "bpa free", "food grade", "certified", "isi", "bis", "warranty",
+    "guarantee", "guaranteed", "lifetime", "machine wash", "machine washable", "hand wash", "dry clean",
+    "dishwasher safe", "microwave safe", "skin friendly", "dermatologically tested",
+)
+# Praise the data can't back; a warning, since it states no checkable fact
+PUFFERY_TERMS = (
+    "premium", "luxury", "luxurious", "durable", "long lasting", "high quality", "top quality", "best", "superior",
+    "finest", "world class", "perfect", "ultimate", "flawless", "unmatched", "exquisite",
+)
+
+
+def _tokens(text: str) -> List[str]:
+    """Lowercase words and numbers, plurals folded ('Sheets' -> 'sheet'), '100%' kept whole."""
+    out = []
+    for t in re.findall(r"\d+(?:\.\d+)?%?|[a-z]+", (text or "").lower()):
+        out.append(t[:-1] if len(t) > 3 and t.endswith("s") and not t.endswith("ss") and not t[0].isdigit() else t)
+    return out
+
+
+def _has_phrase(tokens: List[str], phrase: List[str]) -> bool:
+    n = len(phrase)
+    return n > 0 and any(tokens[i:i + n] == phrase for i in range(len(tokens) - n + 1))
 
 
 class RuleEngine:
@@ -23,19 +53,23 @@ class RuleEngine:
         
         # 1. RUL-1: Required attributes per category
         cat_info = next((c for c in CATEGORIES_INFO if c["category"].lower() == product.category.lower()), None)
-        required_attrs = cat_info["required_attrs"] if cat_info else ["Material"]
-        
-        # Case-insensitive: the importer title-cases headers ("Thread count" is stored as "Thread Count")
-        prod_attrs = {str(k).strip().lower(): v for k, v in (product.attributes or {}).items()}
-        missing_attrs = [attr for attr in required_attrs if not str(prod_attrs.get(attr.lower(), "") or "").strip()]
-        for miss in missing_attrs:
-            issues.append({
-                "level": "error",
-                "kind": "attribute",
-                "field": miss,
-                "message": f"'{miss}' is required for category '{product.category}' and is missing in master catalogue data."
-            })
-            
+        if mp == "meesho":
+            # The fields the product's own Meesho template marks compulsory, as the export checks them
+            missing_attrs = cls._meesho_required_issues(product, issues)
+        else:
+            required_attrs = cat_info["required_attrs"] if cat_info else ["Material"]
+
+            # Case-insensitive: the importer title-cases headers ("Thread count" is stored as "Thread Count")
+            prod_attrs = {str(k).strip().lower(): v for k, v in (product.attributes or {}).items()}
+            missing_attrs = [attr for attr in required_attrs if not str(prod_attrs.get(attr.lower(), "") or "").strip()]
+            for miss in missing_attrs:
+                issues.append({
+                    "level": "error",
+                    "kind": "attribute",
+                    "field": miss,
+                    "message": f"'{miss}' is required for category '{product.category}' and is missing in master catalogue data."
+                })
+
         attr_score = max(0, 5 - len(missing_attrs) * 2)
 
         # 2. RUL-3: Photo count check (Marketplace-specific)
@@ -167,17 +201,9 @@ class RuleEngine:
                     "message": "HTML tags detected in description. Meesho bulk upload sheets only accept plain text."
                 })
 
-            # Words Meesho's catalogue QC flags as warnings in the product description
+            # Meesho's flagged words, Product Name rules and facts the data doesn't state
             if mp == "meesho":
-                meesho_text = " ".join([title, desc] + list(bullets))
-                flagged = [w for w in MEESHO_FLAGGED_WORDS if re.search(rf"\b{w}\b", meesho_text, re.IGNORECASE)]
-                if flagged:
-                    issues.append({
-                        "level": "warning",
-                        "kind": "meesho_flagged_word",
-                        "field": "description",
-                        "message": f"Meesho QC flags {', '.join(repr(w) for w in flagged)} in listing text. Reword to avoid the warning."
-                    })
+                issues.extend(cls.meesho_copy_issues(product, draft))
 
             # Check Bullets
             if mp == "amazon" and len(bullets) < 5:
@@ -227,3 +253,124 @@ class RuleEngine:
                 "title_length_ok": not any(i["kind"] == "title" and i["level"] == "error" for i in issues)
             }
         }
+
+    @classmethod
+    def _meesho_required_issues(cls, product: Product, issues: List[Dict[str, Any]]) -> List[str]:
+        """
+        Adds an error for each compulsory field of the product's Meesho template its data lacks (or holds
+        a value the template doesn't list), or one error when no Meesho category is chosen yet.
+        Seller details are left to Settings and images to their own check. Returns the fields missing.
+        """
+        missing = MeeshoAdapter.missing_fields({"product": product, "draft": None})
+        if not missing["template"]:
+            # No category chosen, a stale choice, or an unreadable template: the adapter's own reason
+            reason = missing["other"][0]["reason"]
+            issues.append({
+                "level": "error",
+                "kind": "meesho_category",
+                "field": MEESHO_CATEGORY_ATTR,
+                "message": f"Meesho category: {reason}. Its template decides the fields Meesho requires.",
+            })
+            return [MEESHO_CATEGORY_ATTR]
+        breadcrumb = missing["meesho_category"]["breadcrumb"]
+        for f in missing["fields"]:
+            issues.append({
+                "level": "error",
+                "kind": "attribute",
+                "field": f["field"],
+                "message": f"Meesho's {breadcrumb} template requires '{f['field']}': {f['reason']}.",
+            })
+        return [f["field"] for f in missing["fields"]]
+
+    @classmethod
+    def meesho_copy_issues(cls, product: Product, draft: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Deterministic checks on Meesho copy, before it can be approved. Errors: a word Meesho's QC flags,
+        a weight, dimension, price or other marketplace's name in the title, and any fact the product
+        data doesn't state (copy_fact_issues, with the Meesho template's option words as the category's
+        fact vocabulary). Praise words are a warning.
+        """
+        title = draft.get("title") or ""
+        bullets = list(draft.get("bullets") or [])
+        text = " ".join([title, draft.get("description") or ""] + bullets)
+        issues: List[Dict[str, Any]] = []
+
+        flagged = [w for w in MEESHO_FLAGGED_WORDS if re.search(rf"\b{w}\b", text, re.IGNORECASE)]
+        if flagged:
+            issues.append({
+                "level": "error",
+                "kind": "meesho_flagged_word",
+                "field": "description",
+                "message": f"Meesho's QC flags {', '.join(repr(w) for w in flagged)}; reword the listing without them.",
+            })
+        for what, pattern in PRODUCT_NAME_RULES:
+            m = re.search(pattern, title, flags=re.IGNORECASE)
+            if m:
+                issues.append({
+                    "level": "error",
+                    "kind": "title",
+                    "field": "title",
+                    "message": f"The title contains {what} ('{m.group(0).strip()}'), which Meesho doesn't allow in Product Name.",
+                })
+                break
+
+        tmpl, _ = MeeshoAdapter.resolve_item_template({"product": product})
+        issues.extend(cls.copy_fact_issues(
+            product, draft, vocabulary=MeeshoAdapter.fact_vocabulary(tmpl), extra_source=tmpl["breadcrumb"] if tmpl else "",
+        ))
+        return issues
+
+    @classmethod
+    def copy_fact_issues(cls, product: Product, draft: Dict[str, Any], vocabulary: List[str] = (),
+                         extra_source: str = "") -> List[Dict[str, Any]]:
+        """
+        Facts the listing states that the product data (name, category, brand, notes, attributes) doesn't:
+        numbers, which also catches converted or rounded measurements; claims (CLAIM_TERMS); and the
+        category's own fact words (`vocabulary`, e.g. a template's fabrics and colours). Each is an
+        error, since AI copy never invents product facts; praise words (PUFFERY_TERMS) are a warning.
+        """
+        attrs = {k: v for k, v in (product.attributes or {}).items() if str(k).strip().lower() != MEESHO_CATEGORY_ATTR.lower()}
+        source = _tokens(" ".join([
+            product.name or "", product.category or "", product.brand or "", product.description or "", extra_source,
+            *(f"{k} {v}" for k, v in attrs.items() if v is not None),
+        ]))
+        copy = _tokens(" ".join([draft.get("title") or "", draft.get("description") or "", *(draft.get("bullets") or [])]))
+        copy_set, source_set = set(copy), set(source)
+
+        def number(t: str) -> Optional[float]:
+            return float(t.rstrip("%")) if t[0].isdigit() else None
+
+        source_numbers = {number(t) for t in source if number(t) is not None}
+        numbers = sorted({t.rstrip("%") for t in copy if number(t) is not None and number(t) not in source_numbers},
+                         key=lambda t: float(t))
+        claims = [c for c in CLAIM_TERMS if _has_phrase(copy, _tokens(c)) and not _has_phrase(source, _tokens(c))]
+        # An option is stated when the data has all its words: 'fitted double' + 'Bedsheets' states 'Fitted Bedsheets'
+        facts = []
+        for word in vocabulary:
+            phrase = _tokens(word)
+            if phrase and phrase[0] in copy_set and _has_phrase(copy, phrase) and not set(phrase) <= source_set:
+                facts.append(word)
+        # 'Navy Blue' unstated already covers its 'Blue'
+        facts = [f for f in facts if not any(o != f and _has_phrase(_tokens(o), _tokens(f)) for o in facts)]
+        puffery = [p for p in PUFFERY_TERMS if _has_phrase(copy, _tokens(p)) and not _has_phrase(source, _tokens(p))]
+
+        issues: List[Dict[str, Any]] = []
+        if numbers:
+            issues.append({
+                "level": "error", "kind": "unsupported_fact", "field": "content",
+                "message": f"States the number(s) {', '.join(numbers)}, which the product data doesn't; "
+                           f"write measurements exactly as the data gives them (no conversions) or leave them out.",
+            })
+        stated = claims + facts
+        if stated:
+            issues.append({
+                "level": "error", "kind": "unsupported_fact", "field": "content",
+                "message": f"States {', '.join(repr(s) for s in stated)}, which the product data doesn't; "
+                           f"take them out, or add them to the product's attributes if they're true.",
+            })
+        if puffery:
+            issues.append({
+                "level": "warning", "kind": "puffery", "field": "content",
+                "message": f"Praise the data can't back: {', '.join(repr(p) for p in puffery)}. State facts instead.",
+            })
+        return issues

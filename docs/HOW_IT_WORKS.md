@@ -114,7 +114,7 @@ The dashboard is one client component, `frontend/app/page.js` (4,546 lines). Tab
 | Publish | `handlePublishMarketplace` (`page.js:982`) | `POST /drafts/{id}/publish` |
 | Payload view | `fetchAmazonPayloads` (`page.js:460`) | `GET /drafts/{id}/amazon-payload`, `GET /drafts/{id}/aplus-payload` |
 
-**Generate (single)** (`drafts.py:42-96`): loads the product, calls `AIService.generate_listing` (§4), runs `RuleEngine.evaluate` (§5), then **upserts** the one draft for that (product, marketplace). Status is set to `draft` and approval cleared.
+**Generate (single)** (`drafts.py:42-96`): loads the product, calls `AIService.generate_listing` (§4), runs `RuleEngine.evaluate` (§5), then **upserts** the one draft for that (product, marketplace). Status is set to `draft` and approval cleared. Meesho copy that fails the deterministic checks is regenerated first (§4.1).
 
 **Generate (batch)** (`drafts.py:100-190`): loops products × marketplaces **sequentially inside the HTTP request**. Existing drafts are skipped unless `overwrite=true`. Before each draft it checks `request.is_disconnected()`; when the browser aborts, it stops, commits what it has, and returns `cancelled: true`. Per-item exceptions are collected in `errors`.
 
@@ -122,7 +122,7 @@ The dashboard is one client component, `frontend/app/page.js` (4,546 lines). Tab
 
 **Edit** (`drafts.py:285-321`): applies changed fields, re-runs the rules, sets `is_approved=false`, `status=draft`.
 
-**Approve** (`drafts.py:324-344`): returns 400 if `rule_results.has_errors`; otherwise `approved`.
+**Approve** (`drafts.py`, `approve_draft`): re-runs the rules against the product as it is now (its data or Meesho category may have changed since the draft was checked) and stores the result; any error returns 400 naming the errors (up to five), otherwise the draft is `approved`.
 
 **Reject** (`drafts.py:347-364`): `status=draft`, `is_approved=false`, stores `rejection_reason`.
 
@@ -179,7 +179,7 @@ File: `backend/app/services/ai_service.py`.
 
 Rules stated in the prompt: a title of at most **90 % of the target marketplace's limit** and keywords within 90 % of its byte limit (`ai_service.py:50`, `:53`, filled at `:105`). Limits live in `backend/app/services/marketplace_limits.py`, shared with the rule engine: titles 75 / 120 / 100 characters (Amazon / Flipkart / Meesho), keywords 200 bytes on Amazon.in and 250 elsewhere, so the prompt asks for 67 / 108 / 90 characters and 180 / 225 / 225 bytes. The other 10 % is buffer, so copy rarely overflows and needs regenerating; the rule engine still accepts anything up to the full limit. Only the target marketplace's numbers appear in the prompt. Also: exactly 5 bullets; 2–3 paragraph description; 5–8 keywords; technical specs only as stated in the attributes (no warranty, weight, origin, manufacturer or certifications that weren't given); A+ content (headline, brand story, 3 feature cards, comparison table); use only supplied data (`:27`); no promotional claims (`:36`). Output must be strict JSON.
 
-For **Meesho** the user prompt adds: don't use the words Meesho QC flags (`MEESHO_FLAGGED_WORDS` in `meesho_adapter.py`: care, comfort, colors), head bullet 5 "WASH & MAINTENANCE", and give each product its own title.
+**Meesho** has its own prompt (`MEESHO_PROMPT_SYSTEM`, `_generate_meesho`). The system prompt allows only facts stated in the product data: numbers and measurements as given, never converted or rounded; no "100%", "pure", "handmade", washing instructions, certifications or warranty unless the data says so; no praise words or offers. Title (90 characters): brand, the product type in shoppers' words and two or three stated attributes, never size, weight, dimension, price or a marketplace name. Then 3–5 one-fact bullets, a 2–4 sentence plain-text description that names the product type as shoppers search for it, including its common Hindi/Hinglish name (Meesho has no keyword field), and 5–8 keywords within 225 bytes. The user prompt gives the product's data (all attributes except the `Meesho Category` id; no price), its Meesho category breadcrumb, the template's compulsory dropdown fields shoppers filter by (`MeeshoAdapter.filter_fields`), the flagged words (`MEESHO_FLAGGED_WORDS`: care, comfort, colors) and the "WASH & MAINTENANCE" heading. **Regeneration:** model copy failing `RuleEngine.meesho_copy_issues` (an invented fact, a flagged word, a Product Name rule) or over 100 characters is regenerated with the failures listed, at most `MEESHO_COPY_RETRIES` = 2 times; what is still wrong then shows as rule errors to fix before approval. Template copy is never regenerated.
 
 ### 4.2 Provider and key selection (`ai_service.py:97-112`)
 
@@ -224,17 +224,17 @@ When a product has no attributes, the prompt says "none provided (do not invent 
 
 ### 4.6 Built-in generator (`ai_service.py:404-470`)
 
-Deterministic. Title = brand + name + colour/material/size (skipping parts already in the name), cut to 195 / 115 / 95 characters (`:431`). Five bullets are built only from attributes found (Pattern, Material/Fabric, Size/Dimensions, Included, Occasion, Care…), with generic wording when an attribute is absent. For Meesho the colour and care bullets are headed "FINISH" and "WASH & MAINTENANCE". Description lists the attributes. Five keywords are derived from category, name and brand. Tagged `engine: "category_agnostic_rule_engine"`, then enriched as in §4.5.
+Deterministic. Title = brand + name + colour/material/size (skipping parts already in the name; never the size for Meesho); attributes that don't fit the marketplace's title limit are left out whole, and only a name longer than the limit is cut, at a word. Bullets restate attributes only (Pattern, Material/Fabric, Size/Dimensions, Included, Occasion, Care…); a bullet without an attribute behind it is left out, so there's no generic filler and no "authentic" or "verified" claims. For Meesho the colour and care bullets are headed "FINISH" and "WASH & MAINTENANCE". Description lists the attributes (not the Meesho Category id). Three keywords are derived from category, name and brand. Tagged `engine: "category_agnostic_rule_engine"`, then enriched as in §4.5.
 
 ---
 
 ## 5. Rule engine
 
-File: `backend/app/services/rule_engine.py`, `RuleEngine.evaluate(product, draft, marketplace)` (`:17`). It runs on single generate, batch generate, edit, and as a pre-check in `GET /drafts/product/{id}` when no draft exists (that pre-check always uses Amazon rules, `drafts.py:273`).
+File: `backend/app/services/rule_engine.py`, `RuleEngine.evaluate(product, draft, marketplace)`. It runs on single generate, batch generate, edit, approve (against the product's current data), after saving Meesho fields (`PUT /drafts/meesho/missing-fields`), and as a pre-check in `GET /drafts/product/{id}` when no draft exists (that pre-check always uses Amazon rules).
 
 | # | Check | Amazon | Flipkart | Meesho | Code |
 | --- | --- | --- | --- | --- | --- |
-| 1 | Required attributes for the category | error each | error each | error each | `:22-37` |
+| 1 | Required attributes: `CATEGORIES_INFO` (Amazon, Flipkart); the Meesho template's compulsory fields the data lacks (Meesho; one error when no Meesho category is chosen) | error each | error each | error each | `_meesho_required_issues` |
 | 2 | Photo count | < 3 error (category min), < 5 warning | < 1 error, < 3 warning | < 1 error | `:39-91` |
 | 3 | Price > 0 | error | error | error | `:94-100` |
 | 4 | Title empty | error | error | error | `:115` |
@@ -243,11 +243,14 @@ File: `backend/app/services/rule_engine.py`, `RuleEngine.evaluate(product, draft
 | 7 | Banned claim in title, bullets or description (whole-word regex, case-insensitive; one hit per block reported) | error | error | error | `:153-172` |
 | 8 | HTML tag in description | — | — | error | `:175-181` |
 | 9 | Bullets | < 5 warning | < 3 warning | < 3 warning | `:184-201` |
-| 10 | Words Meesho QC flags (care, comfort, colors) in title, bullets or description | — | — | warning | `meesho_flagged_word` |
+| 10 | Words Meesho QC flags (care, comfort, colors) in title, bullets or description | — | — | error | `meesho_flagged_word` |
+| 11 | Title with a weight, dimension, price or another marketplace's name (`PRODUCT_NAME_RULES`) | — | — | error | `title` |
+| 12 | Facts the data doesn't state (`copy_fact_issues`): a number (so conversions too), a claim (`CLAIM_TERMS`: 100%, pure, handmade, machine wash, warranty…) or one of the Meesho template's own option words (fabrics, colours, patterns… from `MeeshoAdapter.fact_vocabulary`; an option counts as stated when the data has all its words) | — | — | error | `unsupported_fact` |
+| 13 | Praise the data doesn't use (`PUFFERY_TERMS`: premium, luxury, durable, best, perfect…) | — | — | warning | `puffery` |
 
 Rules 4–10 only run when a draft exists; without one, an info issue "not yet generated" is added.
 
-**Required attributes** come from `CATEGORIES_INFO` in `template_generator.py` (lines 8–131): Bedsheets (Material, Size, Thread count, Care), Pooja items (Material, Dimensions, Finish), Kurtas (Material, Fit, Sleeve, Length, Care), Planters (Material, Dimensions, Drainage), Ethnic footwear (Upper material, Sole, Sizes, Closure), Quilts (Fill, Outer, Size, Weight, Care). **Any other category requires only "Material"** (`rule_engine.py:24`). Attribute names are matched case-insensitively: the importer title-cases headers, so a sheet's "Thread count" is stored as "Thread Count".
+**Required attributes** for **Meesho** are the product's template's compulsory fields, found by the export's own checks (`MeeshoAdapter.missing_fields`; seller details and images are checked elsewhere), so they follow any of the 3,787 templates. For Amazon and Flipkart they come from `CATEGORIES_INFO` in `template_generator.py` (lines 8–131): Bedsheets (Material, Size, Thread count, Care), Pooja items (Material, Dimensions, Finish), Kurtas (Material, Fit, Sleeve, Length, Care), Planters (Material, Dimensions, Drainage), Ethnic footwear (Upper material, Sole, Sizes, Closure), Quilts (Fill, Outer, Size, Weight, Care). **Any other category requires only "Material"**. Attribute names are matched case-insensitively: the importer title-cases headers, so a sheet's "Thread count" is stored as "Thread Count".
 
 **Score (0–25):** title (0–5) + bullets (0–5) + attributes (5 − 2 per missing, min 0) + keywords (1 per keyword, max 5) + photos (1, 3 or 5) (`:214`). Rating: Excellent ≥ 20, Good ≥ 15, otherwise Needs Improvement (`:221`). `passed` = draft exists and no errors (`:218`).
 
@@ -257,14 +260,17 @@ Title limits and photo minimums are **hard-coded**. The `marketplace_limits` blo
 
 ## 6. Draft lifecycle
 
-Model: `backend/app/models/draft.py`. Statuses used by the backend: `draft`, `approved`, `live`.
+Model: `backend/app/models/draft.py`. Statuses used by the backend: `draft`, `approved`, `exported` (Meesho), `live`.
 
 ```mermaid
 stateDiagram-v2
     [*] --> draft: generate (POST /drafts/generate/{pid})
     draft --> draft: edit (PUT /drafts/{id}) — rules re-run
-    draft --> approved: approve — 400 if rule errors
+    draft --> approved: approve — rules re-run, 400 if errors
     approved --> draft: edit / regenerate / reject
+    approved --> exported: Meesho export succeeds
+    exported --> exported: exported again
+    exported --> draft: edit / regenerate / reject
     approved --> live: publish succeeds
     approved --> draft: publish fails — rejection_reason set
     live --> draft: edit / regenerate
@@ -272,6 +278,7 @@ stateDiagram-v2
 
 - One draft per (product, marketplace). This is enforced by the generate code's upsert, not by a database constraint.
 - Regenerating overwrites the copy and clears approval (`drafts.py:66-77`).
+- `exported` means the product went into a Meesho upload file, never that it is on Meesho; it stays approved, so it can be exported again. Nothing becomes `live` on Meesho until its processed file is imported (not built yet).
 - "Rejected" is not a status: a rejected or failed draft is `draft` with `rejection_reason` set. A successful publish clears it.
 - Deleting a product cascades to its drafts (`draft.py`, FK `ondelete="CASCADE"`).
 
@@ -311,7 +318,7 @@ If an attribute "Parent SKU" exists, child-variation fields with theme `COLOR_NA
 
 **Export** (`generate_batch_export`, `:913`) is **all or nothing**: it groups the given products by resolved template (`_group_by_template`, `:1164`), fills each one, and makes a file only when **every** product passes every check; otherwise it raises `MeeshoExportIncomplete` with all problems from all templates, and no file is made. Nothing is skipped quietly: a product without a Meesho category blocks like any other gap, and the seller fixes it or takes it out of the upload. Several templates always come back as one zip; two templates with the same leaf name (Men's and Women's Tshirts) get the template id in the file name (`ListingPilot_Meesho_Tshirts_10000.xlsx`). `check_items` (`:987`) runs the same checks without making a file, for readiness.
 
-**Filling** (`populate_template`) loads an in-memory copy of the template and writes one row per product starting at **row 5**. Every value comes from the product, its Meesho draft or simple arithmetic on them; nothing is defaulted (`_row_inputs`, `_template_value`). A product attribute named exactly like a template column always wins, so sellers can supply any Meesho field (e.g. `Manufacturer Pincode`, `Color`) directly. One exception (`SELLER_ATTRIBUTE_FOR_COLUMN`): the Bedsheets **Size** dropdown (Double Queen, Single, …) is read only from a **`Bed Size`** attribute, because `Size` holds the measurement ("90 x 100 in (double)" can't tell Double Queen from Double King). The fill-in sheet uses `Bed Size` as that column's header, so importing it never overwrites the measurement.
+**Filling** (`populate_template`) loads an in-memory copy of the template and writes one row per product starting at **row 5**. Every value comes from the product, its Meesho draft or simple arithmetic on them; nothing is defaulted (`_row_inputs`, `_template_value`). For any column, the seller's exact Meesho value is an attribute named **`Meesho <column>`** (`Meesho Size`, `Meesho Fabric`; `_seller_attribute`), which wins over everything else; then an attribute named exactly like the column (e.g. `Manufacturer Pincode`, `Color`). The fill-in sheet and the required-fields form save under `Meesho <column>`, so a Meesho value never overwrites a descriptive attribute of the same name: the Bedsheets **Size** dropdown (Double Queen, Single…) is `Meesho Size`, while `Size` keeps the measurement ("90 x 100 in (double)" can't tell Double Queen from Double King).
 
 | Column | Value written |
 | --- | --- |
@@ -324,8 +331,9 @@ If an attribute "Parent SKU" exists, child-variation fields with theme `COLOR_NA
 | Country of origin; manufacturer, packer, importer name/address/pincode | attribute with the column's name; otherwise the seller's **Seller Details** from Settings (`SettingsService.get_seller_details`, `GET|PUT /settings/seller-details`, stored under `seller_details` in the settings file). A product's own value wins; an unset field stays empty and blocks. These fields are not asked per SKU in the fill-in sheet or the required-fields form, which point to Settings instead |
 | Variation | attribute "Size"/"Variation" |
 | Colour, fabric, pattern, included components, net quantity | matching attributes ("Colour", "Material", "Pattern"/"Print", "Included", …). Fabric/Material and Pattern/Print fill only the columns named exactly that: "Sole Material" and "Weave Pattern" need their own attribute |
-| Bedsheet length/width size; product length/width (cm) | longer/shorter side of the first "A x B in" in Size/Dimensions (cm = inches × 2.54) |
-| Product length / width / dimension unit (Bedsheets 12776) | longer / shorter side of that "A x B in", in inches; unit `inch` |
+| Bedsheet length/width size; other length/width (cm) columns | longer/shorter side of the first "A x B in" in Size/Dimensions (cm = inches × 2.54) |
+| Product length / breadth / width / height, their unit (`Product Unit`, `Product Dimension Unit`), the `(cm)` versions and `Product Dimensions (L x B x H) in cm` (any template; `_measurements`) | the one "A x B [x C] unit" measurement the `Dimensions` (else `Size`) attribute states (`_stated_dimensions`): two sides are length (longer) and width/breadth, three are length, breadth, height as written; the unit as the template's dropdown spells it (`Inch`, `cm`); `(cm)` columns converted to cm, one decimal. A text with no clear measurement or several ("10 in diameter x 3.5 in depth", "3.5 x 3.5 in each pot, tray 11 x 4 in") fills nothing |
+| Product weight + unit, Weight + Weight Unit (any template) | the one weight a `Weight` attribute states (`_stated_weight`): in the stated unit when the template lists that amount, else in the other unit (1.2 kg → `1.2` + `Kg`, 350 g → `350` + `G`); never rounded, so 480 g on a template listing neither 480 nor 0.48 is left to the seller. A `Weight` dropdown spelling both (`500gm`, `1.5kg`) gets that option |
 | Dimensions (inches) (Bedsheets 12776) | the one `A*B-(Label)` option with the same two sides, narrowed by the row's Variation when several share them (`_dimension_option`); otherwise a blocking problem |
 | Care Instructions, Ideal For, Ideal Season, Occassion Type, Quality, Type (Bedsheets 12776) | attributes with the column's name only; nothing in the product data implies them |
 | Pillow length/width; no. of pillow covers | the "A x B in" and the "N pillow" in the Included text |
@@ -334,13 +342,13 @@ If an attribute "Parent SKU" exists, child-variation fields with theme `COLOR_NA
 
 **Dropdown columns** (`_match_dropdown_option`) take only high-confidence matches, returned with the template's exact spelling: exact (case-insensitive) → same number, with or without a unit ("180 TC" → "180") → exactly one option named as a whole word in the value ("100% cotton" → "Cotton", "90 x 100 in (double)" → "Double"; longest option wins, so "Navy Blue" beats "Blue"). Brand, HSN, GST, country, Group ID and colour accept only exact or numeric matches, so "Indigo and white" is not turned into "White" and Brand is never picked.
 
-**Problems** are collected per SKU: a compulsory column (row-2 "* Compulsory Field" marker) left empty, a value that isn't a template option, or several designs sharing one Product Name (Meesho merges them as sizes of one product and rejects the rows; distinct sizes of one Style ID may share a name). Any compulsory problem raises `MeeshoExportIncomplete`; non-compulsory ones (e.g. a brand not on Meesho's list) leave the cell empty and don't block. **Upload rules** (`_upload_rule_problems`, `:733`), all blocking: the product's Meesho draft must exist and be **approved**; Product Name at most **100 characters** and free of a weight (`750 gm`), a dimension (`90 x 100`, `10 inch`), a price (`₹499`) or another marketplace's name (`PRODUCT_NAME_RULES`; bare units that are also words or model names, like `2 in 1`, `5G`, `3M`, aren't matched); no word Meesho's QC flags (`MEESHO_FLAGGED_WORDS`) in the title, description or bullets; **Meesho Price lower than MRP** and a Wrong/Defective discount below the Meesho Price (the template's own rules); every image link a web link that isn't Google Drive, a stock-photo site, a local address or ListingPilot's own storage (`UNUSABLE_IMAGE_LINKS`; the template asks for links from Meesho's Images Bulk Upload).
+**Problems** are collected per SKU: a compulsory column (row-2 "* Compulsory Field" marker) left empty, a value that isn't a template option, or several designs sharing one Product Name (Meesho merges them as sizes of one product and rejects the rows; distinct sizes of one Style ID may share a name). Any compulsory problem raises `MeeshoExportIncomplete`; non-compulsory ones (e.g. a brand not on Meesho's list) leave the cell empty and don't block. **Upload rules** (`_upload_rule_problems`, `:733`), all blocking: the product's Meesho draft must exist and be **approved**; Product Name at most **100 characters** and free of a weight (`750 gm`), a dimension (`90 x 100`, `10 inch`), a price (`₹499`) or another marketplace's name (`PRODUCT_NAME_RULES`; bare units that are also words or model names, like `2 in 1`, `5G`, `3M`, aren't matched); no word Meesho's QC flags (`MEESHO_FLAGGED_WORDS`) in the title, description or bullets; **Meesho Price lower than MRP** and a Wrong/Defective discount below the Meesho Price (the template's own rules); every image link a web link that isn't Google Drive, a stock-photo site or a local address (`UNUSABLE_IMAGE_LINKS`). Links to the seller's own storage are allowed: Meesho accepted a Supabase Storage signed link (3 Nov 2026).
 
-`GET /drafts/meesho/export` (`drafts.py:660`) takes the upload's `product_ids` (else a `category`, else every product; an id that doesn't exist is a 404, never dropped) and answers **422** with `detail: {message, problems: [{sku, category, field, reason, blocking}]}` instead of a file when anything blocks. `GET /drafts/meesho/readiness?product_ids=` (`:687`) returns each product's Meesho category, `ready`, and its blocking problems, checked together as the upload would be; all products when no ids are given.
+`GET /drafts/meesho/export` (`drafts.py:660`) takes the upload's `product_ids` (else a `category`, else every product; an id that doesn't exist is a 404, never dropped) and answers **422** with `detail: {message, problems: [{sku, category, field, reason, blocking}]}` instead of a file when anything blocks. A successful export marks each product's Meesho draft `exported` (never `live`) and records the time in `last_sync_at`. `GET /drafts/meesho/readiness?product_ids=` (`:687`) returns each product's Meesho category, `ready`, and its blocking problems, checked together as the upload would be; all products when no ids are given.
 
 **Fill-in sheet** (`build_fill_in_sheet`, `GET /drafts/meesho/fill-in-sheet?product_ids=` or `?category=`): a workbook with a "Fill in" sheet (SKU, name, category, one column per blocking field using the template's own column names, highlighted where that SKU needs it, plus the current image links, with Image 1 highlighted when it is missing), Excel dropdowns with the template's exact options ("Allowed values"), "What's wrong" (every problem) and "How to use". A product without a Meesho category gets a **Meesho Category** column, with every category's breadcrumb as its dropdown, so the sheet is produced even when that is the only gap. Importing it in the Catalogue tab stores the values as attributes, which the export then reads. The Meesho Upload panel downloads it for the not-ready products on request; blockers a cell can't fix (approval, Product Name, image links) are listed under "What's wrong".
 
-**Meesho required fields form** (`missing_fields`, `GET|PUT /drafts/meesho/missing-fields/{product_id}`, `frontend/app/components/MeeshoRequiredFields.jsx`): runs the export's own checks on one product and lists each blocking field with the attribute it is saved under (e.g. `Bed Size` for Bedsheets' Size) and the template's exact options; images and Product Name blockers are listed separately since a value can't fix them. PUT merges values into the product's attributes (other attributes untouched); every key must be a field of the category's template and every dropdown value one of its options exactly, otherwise **nothing** is saved (422). Nothing is pre-selected. Shown in AI Drafts & Review under the master data when the marketplace is Meesho, and in the product drawer's read-only view (not while editing, so the edit form's copy of the attributes can't overwrite a save). It also shows the product's Meesho category (or that none is chosen) with the picker (§7.3).
+**Meesho required fields form** (`missing_fields`, `GET|PUT /drafts/meesho/missing-fields/{product_id}`, `frontend/app/components/MeeshoRequiredFields.jsx`): runs the export's own checks on one product and lists each blocking field with the attribute it is saved under (`Meesho <column>`, e.g. `Meesho Size`) and the template's exact options; images and Product Name blockers are listed separately since a value can't fix them. PUT merges values into the product's attributes (other attributes untouched); every key must be a field of the category's template and every dropdown value one of its options exactly, otherwise **nothing** is saved (422). After saving, the product's Meesho draft (if any) has its rules re-run and is returned as `draft`, so the editor's approval state reflects the new values. Nothing is pre-selected. Shown in AI Drafts & Review under the master data when the marketplace is Meesho, and in the product drawer's read-only view (not while editing, so the edit form's copy of the attributes can't overwrite a save). It also shows the product's Meesho category (or that none is chosen) with the picker (§7.3).
 
 **"Publish"** for Meesho returns **409** with upload instructions and changes nothing; the frontend shows the same instructions without calling it.
 
@@ -445,11 +453,11 @@ cd frontend; npm install; npm run dev        # http://localhost:3000
 | `test_ai_groq.py` | 14 (16 cases) | Groq provider, rate-limit cooldown and waits, generation source, normalising incomplete model output, rejecting a reply with the description in the bullets, prompt asking for 90 % of each marketplace's limits, template-copy titles within the Amazon limit |
 | `test_phase2_endpoints.py` | 6 | Amazon publish/payloads, status grid, reports |
 | `test_phase3_endpoints.py` | 9 | Flipkart stub, Meesho templates/export refusal/dropdowns |
-| `test_meesho_export.py` | 50 (88 cases) | Meesho values from product data only, high-confidence dropdown matching, whole-word template matching, name matches only suggest, audience-aware suggestions, template ids and real names (incl. '/'), category defaults and product choice, taxonomy and category-default endpoints, all-or-nothing export, readiness and selection endpoints, approval, title length, Product Name, flagged-word, price and image-link rules, Meesho Category from fill-in sheet and endpoint, lazy template loading, one zip file per template, exact Fabric/Pattern columns, blocking problems, fill-in sheet, 422 endpoint, flagged words, case-insensitive required attributes |
+| `test_meesho_export.py` | 64 (114 cases) | Meesho values from product data only, `Meesho <column>` values for any template, size and weight columns from one stated measurement, high-confidence dropdown matching, whole-word template matching, name matches only suggest, audience-aware suggestions, template ids and real names (incl. '/'), category defaults and product choice, taxonomy and category-default endpoints, all-or-nothing export, drafts marked exported, readiness and selection endpoints, approval re-checked against current data, title length, Product Name, flagged-word, price and image-link rules (own storage allowed), the copy fact check (numbers, claims, template option words, praise), Meesho prompt from template and data, regeneration (at most 2), template copy without claims, template-required fields, Meesho Category from fill-in sheet and endpoint, lazy template loading, one zip file per template, exact Fabric/Pattern columns, fill-in sheet, 422 endpoint, case-insensitive required attributes |
 | `test_no_invented_data.py` | 8 | Exact header matching, no invented MRP/images, seed never overwrites, Meesho publish refused, AI and Amazon Legal Metrology from attributes only (not from draft specs) |
 | `test_phase4_endpoints.py` | 5 | Brand voice, banned claims, credential masking, health |
 | `test_celery_tasks.py` | 4 | Task registration, generate dispatch, status |
-| **Total** | **115** (155 cases) | |
+| **Total** | **129** (181 cases) | |
 
 Not covered: the batch-publish task, live Amazon/Flipkart paths, the OpenRouter cascade, and the whole frontend.
 
@@ -546,7 +554,7 @@ Also `GET /` (banner) and `/static/uploads/*` outside `/api/v1`.
 **Missing**
 - Amazon: status polling / real ASIN, price/stock update, GTIN search, validation preview.
 - Flipkart: any live call; Settings credentials.
-- Meesho: no pilot category has a Meesho category chosen yet (Admin & Settings → Meesho Categories); photo intake to storage, image ZIP and link paste-back; upload checklist; drafts aren't marked "exported"; processed-file import.
+- Meesho: no pilot category has a Meesho category chosen yet (Admin & Settings → Meesho Categories); photo intake to storage; upload checklist; processed-file import. Choosing a category default doesn't re-check existing Meesho drafts: regenerate them (the prompt needs the category anyway) or approve, which re-checks.
 - Import screen doesn't show row errors.
 - Rule limits and required attributes not editable.
 - No workspaces/users, audit log, Setup wizard, encrypted credentials, migrations, login.
