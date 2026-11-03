@@ -4,6 +4,8 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import MarketplaceLiveTwinPreview from "./components/MarketplaceLiveTwinPreview";
 import MeeshoRequiredFields from "./components/MeeshoRequiredFields";
 import SellerDetailsCard from "./components/SellerDetailsCard";
+import MeeshoCategoryDefaults from "./components/MeeshoCategoryDefaults";
+import MeeshoUploadPanel from "./components/MeeshoUploadPanel";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000/api/v1";
 
@@ -130,6 +132,7 @@ export default function ListingPilotPhase3App() {
 
   // Meesho Official Templates & Category Taxonomy Explorer
   const [meeshoTemplates, setMeeshoTemplates] = useState([]);
+  const [showMeeshoUpload, setShowMeeshoUpload] = useState(false);
   const [showMeeshoTemplatesModal, setShowMeeshoTemplatesModal] = useState(false);
   const [meeshoTaxonomyQuery, setMeeshoTaxonomyQuery] = useState("");
   const [meeshoTaxonomyResults, setMeeshoTaxonomyResults] = useState([]);
@@ -708,120 +711,6 @@ export default function ListingPilotPhase3App() {
       showToast("Publish Failed", err.message || "The publish request failed. Nothing was published.", "error");
     } finally {
       setIsPublishing(false);
-    }
-  };
-
-  const handleDownloadMeeshoSheet = async (category = "All") => {
-    const isAll = category === "All" || !category;
-    showToast(
-      "Generating Meesho Flat File...", 
-      isAll ? "Packaging catalog into official Meesho category templates..." : `Packaging ${category} into official Meesho template...`, 
-      "info"
-    );
-    try {
-      const params = new URLSearchParams();
-      if (!isAll) {
-        params.append("category", category);
-      } else {
-        params.append("as_zip", "true");
-      }
-
-      const res = await fetch(`${API_BASE}/drafts/meesho/export?${params.toString()}`);
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        const detail = body && body.detail;
-        const problems = (detail && detail.problems) || [];
-        const sample = problems.slice(0, 3).map(p => `${p.sku}: ${p.field} (${p.reason})`).join("; ");
-        const more = problems.length > 3 ? `; +${problems.length - 3} more` : "";
-        if (res.status === 422) {
-          // Hand the seller the gaps as a sheet they can fill and re-import in the Catalogue tab
-          const fillParams = isAll ? "" : `?category=${encodeURIComponent(category)}`;
-          const fillRes = await fetch(`${API_BASE}/drafts/meesho/fill-in-sheet${fillParams}`);
-          if (fillRes.ok) {
-            const fillUrl = window.URL.createObjectURL(await fillRes.blob());
-            const link = document.createElement("a");
-            link.href = fillUrl;
-            link.download = `Meesho_fill_in_${isAll ? "All" : category}.xlsx`;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            window.URL.revokeObjectURL(fillUrl);
-            // Some blockers can't be fixed by filling cells; say which, so the sheet isn't the only hint
-            const noTemplate = [...new Set(problems.filter(p => p.blocking && p.field === "Template").map(p => p.category))];
-            const sameName = problems.filter(p => p.blocking && p.field === "Product Name").length;
-            const notInSheet = [
-              noTemplate.length ? `no official Meesho template for ${noTemplate.join(", ")} (download it from the supplier panel)` : "",
-              sameName ? `${sameName} SKU(s) share a Product Name (give each draft its own title)` : ""
-            ].filter(Boolean).join("; ");
-            showToast(
-              "Meesho Export Blocked",
-              `${problems.length} problem(s). Downloaded a fill-in sheet: complete the highlighted cells and import it in the Catalogue tab, then export again.` +
-                (notInSheet ? ` Not fixable in the sheet: ${notInSheet}.` : ""),
-              "error"
-            );
-            return;
-          }
-        }
-        throw new Error(
-          (detail && detail.message ? `${detail.message} ${sample}${more}` : null) ||
-          (typeof detail === "string" ? detail : `Meesho export failed (HTTP ${res.status})`)
-        );
-      }
-      
-      const blob = await res.blob();
-      const contentType = res.headers.get("content-type") || "";
-      const isZip = contentType.includes("zip") || blob.type.includes("zip");
-
-      let downloadFilename = isZip
-        ? `ListingPilot_Meesho_Batch_${new Date().toISOString().slice(0, 10)}.zip`
-        : `ListingPilot_Meesho_${category}_${new Date().toISOString().slice(0, 10)}.xlsx`;
-
-      const disposition = res.headers.get("content-disposition");
-      if (disposition && disposition.includes("filename=")) {
-        const matches = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/.exec(disposition);
-        if (matches && matches[1]) {
-          downloadFilename = matches[1].replace(/['"]/g, "");
-        }
-      }
-
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = downloadFilename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
-
-      let skipped = {};
-      try { skipped = JSON.parse(res.headers.get("x-meesho-skipped") || "{}"); } catch { skipped = {}; }
-      const skippedCats = Object.keys(skipped);
-      if (skippedCats.length) {
-        // One toast at a time, so the download and what it leaves out are said together
-        const count = skippedCats.reduce((n, c) => n + skipped[c].length, 0);
-        showToast(
-          `Meesho File Ready, ${count} SKU(s) Left Out`,
-          `${downloadFilename} downloaded. Not included (no official Meesho template): ` +
-            `${skippedCats.map(c => `${c} (${skipped[c].length})`).join(", ")}. ` +
-            "Download those templates from the supplier panel into docs/meesho/templates to include them.",
-          "warn"
-        );
-      } else if (isZip) {
-        showToast(
-          "Meesho Package Ready 📦", 
-          `Multi-category package (${downloadFilename}) contains separate official Excel sheets for each category.`, 
-          "success"
-        );
-      } else {
-        showToast(
-          "Meesho Flat File Ready 📦", 
-          `Multi-sheet workbook (${downloadFilename}) ready to upload on supplier.meesho.com.`, 
-          "success"
-        );
-      }
-    } catch (err) {
-      console.warn("Meesho export failed:", err);
-      showToast("Meesho Export Failed", err.message || "Meesho export failed.", "error");
     }
   };
 
@@ -2309,27 +2198,14 @@ export default function ListingPilotPhase3App() {
                 Agnostic Excel template engine. Reads master sheets dynamically from Row 3, maps 2-Prices GSTIN formulas, image URLs, and legal metrology.
               </p>
               
-              {meeshoTemplates.length > 0 && (
-                <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "12px" }}>
-                  {meeshoTemplates.map(t => (
-                    <span 
-                      key={t.category} 
-                      className="chip" 
-                      style={{ fontSize: "0.7rem", background: "var(--purple-soft)", color: "var(--purple)", border: "1px solid rgba(156, 39, 176, 0.2)" }}
-                    >
-                      ✓ {t.category} ({t.total_columns} cols)
-                    </span>
-                  ))}
-                </div>
-              )}
 
               <div style={{ display: "flex", gap: "8px" }}>
                 <button 
                   className="btn btn-sm btn-primary"
                   style={{ flex: 1, fontSize: "0.78rem", padding: "6px 8px", background: "var(--purple)", borderColor: "var(--purple)" }}
-                  onClick={() => handleDownloadMeeshoSheet(selectedCat)}
+                  onClick={() => setShowMeeshoUpload(true)}
                 >
-                  📥 Download {selectedCat === "All" ? "Full Catalog (ZIP)" : `${selectedCat} (.xlsx)`}
+                  📥 Meesho Upload
                 </button>
                 <button 
                   className="btn btn-sm btn-ghost"
@@ -2375,9 +2251,9 @@ export default function ListingPilotPhase3App() {
               <button 
                 className="btn btn-sm"
                 style={{ background: "var(--purple)", color: "#fff", borderColor: "var(--purple)", fontWeight: 600 }}
-                onClick={() => handleDownloadMeeshoSheet(selectedCat)}
+                onClick={() => setShowMeeshoUpload(true)}
               >
-                📥 Download Meesho Flat File ({selectedCat === "All" ? "Full Catalog (ZIP)" : selectedCat})
+                📥 Meesho Upload
               </button>
             </div>
           </div>
@@ -2859,6 +2735,7 @@ export default function ListingPilotPhase3App() {
             </div>
           )}
           {adminActiveSubTab === "brand" && <SellerDetailsCard notify={showToast} />}
+          {adminActiveSubTab === "brand" && <MeeshoCategoryDefaults notify={showToast} />}
 
           {/* ── Sub-tab 2: Prohibited Claims / Banned Words (ADM-1, RUL-4) ────── */}
           {adminActiveSubTab === "claims" && (
@@ -3432,19 +3309,6 @@ export default function ListingPilotPhase3App() {
                   ) : (
                     <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
                       <span className="price-val cat">{drawerProduct.category || "General"}</span>
-                      {(() => {
-                        const catLower = (drawerProduct.category || "").toLowerCase();
-                        const matched = meeshoTemplates.find(t => 
-                          t.category.toLowerCase() === catLower ||
-                          catLower.includes(t.category.toLowerCase()) ||
-                          t.category.toLowerCase().includes(catLower)
-                        );
-                        return matched ? (
-                          <span className="chip" style={{ fontSize: "0.66rem", background: "var(--purple-soft)", color: "var(--purple)" }} title={`Matches official template: ${matched.filename}`}>
-                            ✓ Meesho Ready
-                          </span>
-                        ) : null;
-                      })()}
                     </div>
                   )}
                   <datalist id="drawer-category-list">
@@ -4030,6 +3894,8 @@ export default function ListingPilotPhase3App() {
         </div>
       )}
 
+      <MeeshoUploadPanel open={showMeeshoUpload} onClose={() => setShowMeeshoUpload(false)} notify={showToast} />
+
       {/* ── Meesho Category Templates & Taxonomy Modal ────────────────────── */}
       {showMeeshoTemplatesModal && (
         <div className="modal-overlay" onClick={() => setShowMeeshoTemplatesModal(false)}>
@@ -4060,49 +3926,14 @@ export default function ListingPilotPhase3App() {
                     Active Official Templates ({meeshoTemplates.length})
                   </h4>
                   <span style={{ fontSize: "0.75rem", color: "var(--muted)" }}>
-                    Drop templates in <code>docs/meesho/templates/</code>
+                    Read from <code>docs/meesho/Meesho Templates/</code>
                   </span>
                 </div>
-
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "10px" }}>
-                  {meeshoTemplates.map(t => (
-                    <div 
-                      key={t.category} 
-                      style={{ 
-                        background: "var(--surface)", 
-                        border: "1px solid var(--line)", 
-                        borderRadius: "8px", 
-                        padding: "12px",
-                        boxShadow: "var(--shadow-sm)"
-                      }}
-                    >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "6px" }}>
-                        <span style={{ fontWeight: 700, fontSize: "0.92rem" }}>{t.category}</span>
-                        <span className="chip" style={{ fontSize: "0.68rem", background: "var(--good-soft)", color: "var(--good)" }}>
-                          ✓ Ready
-                        </span>
-                      </div>
-                      <div style={{ fontSize: "0.74rem", color: "var(--muted)", marginBottom: "4px" }}>
-                        Sheet: <b>{t.sheet_name}</b> · <b>{t.total_columns}</b> columns
-                      </div>
-                      <div style={{ fontSize: "0.72rem", color: "var(--muted)", wordBreak: "break-all", marginBottom: "8px" }}>
-                        📄 {t.filename}
-                      </div>
-                      {t.hierarchy && (
-                        <div style={{ fontSize: "0.68rem", color: "var(--muted)", background: "var(--sunk)", padding: "4px 6px", borderRadius: "4px", marginBottom: "8px" }}>
-                          Path: {t.hierarchy}
-                        </div>
-                      )}
-                      <button 
-                        className="btn btn-sm"
-                        style={{ width: "100%", fontSize: "0.74rem", padding: "4px 8px", background: "var(--purple)", color: "#fff", borderColor: "var(--purple)" }}
-                        onClick={() => handleDownloadMeeshoSheet(t.category)}
-                      >
-                        📥 Export {t.category} (.xlsx)
-                      </button>
-                    </div>
-                  ))}
-                </div>
+                {/* Thousands of templates: search them below rather than listing each one */}
+                <p style={{ fontSize: "0.78rem", color: "var(--muted)", margin: 0 }}>
+                  Each product is filled into the template for its Meesho Category (or its category, when exactly one template fits).
+                  Search a category below to see whether it has a template.
+                </p>
               </div>
 
               {/* Taxonomy Explorer Section */}
@@ -4193,7 +4024,7 @@ export default function ListingPilotPhase3App() {
 
             <div className="modal-footer" style={{ borderTop: "1px solid var(--line)", paddingTop: "12px", display: "flex", justifyContent: "space-between" }}>
               <div style={{ fontSize: "0.76rem", color: "var(--muted)" }}>
-                💡 Drop any official Meesho template into <code>docs/meesho/templates/</code> to auto-activate.
+                💡 Templates are read from <code>docs/meesho/Meesho Templates/&lt;category path&gt;/</code>.
               </div>
               <button className="btn" onClick={() => setShowMeeshoTemplatesModal(false)}>Close</button>
             </div>

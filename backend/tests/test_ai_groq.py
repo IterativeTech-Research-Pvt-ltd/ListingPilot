@@ -244,3 +244,26 @@ def test_single_generate_reports_generation_source():
 
     assert res.status_code == 200
     assert res.json()["generation_source"] == "template"
+
+
+@pytest.mark.parametrize("marketplace, title_chars, keyword_bytes", [
+    ("amazon", 67, 180),     # 90% of 75 characters and 200 bytes
+    ("flipkart", 108, 225),  # 90% of 120 characters and 250 bytes
+    ("meesho", 90, 225),     # 90% of 100 characters and 250 bytes
+])
+def test_prompt_asks_for_90_percent_of_the_marketplace_limits(marketplace, title_chars, keyword_bytes):
+    fake = AsyncMock(return_value={"title": "t"})
+    with patch.object(AIService, "_call_chat_completions", fake):
+        asyncio.run(AIService.generate_listing(_product(), marketplace=marketplace))
+    system_prompt = fake.call_args.args[4]
+    assert f"At most {title_chars} characters" in system_prompt
+    assert f"within {keyword_bytes} bytes" in system_prompt
+    # Only the target marketplace's limit, so the model can't pick another one
+    assert "200 characters" not in system_prompt and "Flipkart, 100" not in system_prompt
+
+
+def test_template_copy_title_fits_the_amazon_limit():
+    product = _product()
+    product.name = "Hand block print double bedsheet with two matching pillow covers in jaipuri style"
+    title = AIService._fallback_generator(product, "Gulmohar Home", marketplace="amazon")["title"]
+    assert len(title) <= 75

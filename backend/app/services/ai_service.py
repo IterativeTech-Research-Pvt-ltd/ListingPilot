@@ -32,6 +32,7 @@ from app.models.product import Product
 from app.services.settings_service import SettingsService
 from app.services.amazon_ptd_service import AmazonPTDService
 from app.services.meesho_adapter import MEESHO_FLAGGED_WORDS
+from app.services.marketplace_limits import title_limit, keyword_byte_limit, prompt_target
 
 PROMPT_SYSTEM = """You are ListingPilot's marketplace listing generation engine. 
 Your role is to transform raw master catalogue product data into high-converting, compliant, exhaustive tier-1 listings (Apple / flagship merchant caliber) for Amazon.in, Flipkart, and Meesho.
@@ -46,10 +47,10 @@ Brand Voice & Guidelines:
 - Accuracy: Use ONLY the provided product attributes and specs. Never fabricate dimensions, materials, or certifications.
 
 Strict Marketplace Rules:
-1. Title: Under 200 characters for Amazon, 120 for Flipkart, 100 for Meesho. Formula: [Brand] + [Product Type / Key Attributes] + [Material / Model / Size / Colour] + [Use / Benefit]. Do not use all-caps for entire words.
+1. Title: At most {title_chars} characters including spaces. Formula: [Brand] + [Product Type / Key Attributes] + [Material / Model / Size / Colour] + [Use / Benefit]. Do not use all-caps for entire words.
 2. 5 Bullet Points: Exactly 5 bullets. Start each bullet with a short capitalized headline followed by an em-dash or colon (e.g., "CORE PERFORMANCE — ..."). Focus on: (1) Primary Breakthrough / Core Benefit, (2) Material & Build Quality, (3) Dimensions, Capacity & Fit, (4) Everyday Versatility & Inclusions, (5) Care Instructions & Longevity.
 3. Description: 2-3 concise paragraphs highlighting core utility, build quality, and everyday benefits.
-4. Keywords: 5 to 8 relevant search phrases shoppers actually search for. Total keywords must fit within 250 bytes.
+4. Keywords: 5 to 8 relevant search phrases shoppers actually search for. All keywords together must fit within {keyword_bytes} bytes (UTF-8).
 5. Technical Specs: Structured dictionary for Amazon's Technical Details table with ONLY the specifications stated in the product attributes. Leave out anything they don't state; never add warranty, weight, country of origin, manufacturer or certifications that weren't provided.
 6. A+ Enhanced Brand Content: Include hero headline, inspiring brand story, 3 feature spotlight cards (title, subtitle, description), and a comparison table matrix comparing this model with alternatives.
 7. PROHIBITED: NEVER include promotional or policy claims like "Free delivery", "Best seller", "100% guarantee", "Cheapest", "Money back".
@@ -100,7 +101,9 @@ class AIService:
             brand=brand,
             tone=tone,
             audience=audience,
-            avoid_claims=avoid_claims
+            avoid_claims=avoid_claims,
+            title_chars=prompt_target(title_limit(marketplace)),
+            keyword_bytes=prompt_target(keyword_byte_limit(marketplace)),
         )
         
         attrs_str = ", ".join([f"{k}: {v}" for k, v in (product.attributes or {}).items()])
@@ -492,7 +495,7 @@ Meesho rules:
             title_components.append(str(size_spec))
             
         title = " - ".join([str(c) for c in title_components if c])
-        max_title_len = 95 if mp == "meesho" else 115 if mp == "flipkart" else 195
+        max_title_len = title_limit(mp)
         if len(title) > max_title_len:
             title = title[:max_title_len - 3].rstrip() + "..."
 

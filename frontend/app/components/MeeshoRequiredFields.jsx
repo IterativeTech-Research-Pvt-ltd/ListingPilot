@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import MeeshoCategoryPicker from "./MeeshoCategoryPicker";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000/api/v1";
 
@@ -11,6 +12,7 @@ export default function MeeshoRequiredFields({ product, onSaved, notify }) {
   const [loadError, setLoadError] = useState("");
   const [values, setValues] = useState({});
   const [saving, setSaving] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   const productId = product?.id;
   const attrsKey = JSON.stringify(product?.attributes || {});
@@ -40,17 +42,83 @@ export default function MeeshoRequiredFields({ product, onSaved, notify }) {
   if (!missing) {
     return <div style={{ ...box, background: "var(--sunk)", color: "var(--muted)" }}>Checking Meesho fields…</div>;
   }
+  const putValues = async (payload) => {
+    const res = await fetch(`${API_BASE}/drafts/meesho/missing-fields/${productId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values: payload })
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      const errors = body?.detail?.errors;
+      throw new Error(errors ? errors.join("; ") : (body?.detail?.message || body?.detail || `HTTP ${res.status}`));
+    }
+    setMissing(body.missing);
+    onSaved && onSaved(body.product);
+    return body;
+  };
+
+  // Empty id removes the product's own choice, so its category's default applies again
+  const saveCategory = async (id, breadcrumb) => {
+    setPickerOpen(false);
+    setSaving(true);
+    try {
+      await putValues({ "Meesho Category": id || "" });
+      notify && notify("Meesho Category Saved", id ? breadcrumb : "This product now follows its category's default.", "success");
+    } catch (err) {
+      notify && notify("Meesho Category Not Saved", err.message, "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const chosen = missing.meesho_category || {};
+  const categoryBar = (
+    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
+      <span style={{ fontWeight: 700 }}>Meesho category:</span>
+      {chosen.breadcrumb ? (
+        <span>
+          {chosen.breadcrumb}{" "}
+          <span style={{ color: "var(--muted)" }}>
+            ({chosen.source === "product" ? "chosen for this product" : `default for ${missing.category}`})
+          </span>
+        </span>
+      ) : (
+        <span style={{ color: "var(--bad)" }}>not chosen, so this product is left out of Meesho exports</span>
+      )}
+      <button className="btn btn-sm" onClick={() => setPickerOpen(true)} disabled={saving}>
+        {chosen.breadcrumb ? "Change" : "Choose"}
+      </button>
+      {chosen.source === "product" && (
+        <button className="btn btn-sm" onClick={() => saveCategory("", "")} disabled={saving}>Use category default</button>
+      )}
+      <MeeshoCategoryPicker
+        open={pickerOpen}
+        title={`Meesho category for ${product.sku}`}
+        valueId={chosen.id}
+        suggestions={chosen.suggestions || []}
+        onPick={saveCategory}
+        onClose={() => setPickerOpen(false)}
+      />
+    </div>
+  );
+
   if (!missing.template) {
     return (
-      <div style={{ ...box, background: "var(--sunk)", color: "var(--muted)" }}>
-        No official Meesho template for <b>{missing.category}</b>, so this product is left out of Meesho exports.
-        Add the template from the supplier panel to <code>docs/meesho/templates</code> to include it.
+      <div style={{ ...box, background: "var(--sunk)" }}>
+        {categoryBar}
+        {missing.other.map(o => <div key={o.field} style={{ color: "var(--muted)" }}>{o.reason}</div>)}
       </div>
     );
   }
   const seller = missing.seller || [];
   if (missing.fields.length === 0 && seller.length === 0 && missing.other.length === 0) {
-    return <div style={{ ...box, background: "var(--good-soft)", color: "var(--good)" }}>✓ Every compulsory Meesho field is filled.</div>;
+    return (
+      <div style={{ ...box, background: "var(--good-soft)" }}>
+        {categoryBar}
+        <div style={{ color: "var(--good)" }}>✓ Every compulsory Meesho field is filled.</div>
+      </div>
+    );
   }
 
   const filled = Object.entries(values).filter(([, v]) => v && v.trim());
@@ -58,19 +126,8 @@ export default function MeeshoRequiredFields({ product, onSaved, notify }) {
   const save = async () => {
     setSaving(true);
     try {
-      const res = await fetch(`${API_BASE}/drafts/meesho/missing-fields/${productId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ values: Object.fromEntries(filled) })
-      });
-      const body = await res.json().catch(() => null);
-      if (!res.ok) {
-        const errors = body?.detail?.errors;
-        throw new Error(errors ? errors.join("; ") : (body?.detail?.message || body?.detail || `HTTP ${res.status}`));
-      }
+      const body = await putValues(Object.fromEntries(filled));
       setValues({});
-      setMissing(body.missing);
-      onSaved && onSaved(body.product);
       notify && notify("Meesho Fields Saved", `${filled.length} field(s) saved to ${body.product.sku}.`, "success");
     } catch (err) {
       notify && notify("Meesho Fields Not Saved", err.message, "error");
@@ -81,6 +138,7 @@ export default function MeeshoRequiredFields({ product, onSaved, notify }) {
 
   return (
     <div style={{ ...box, background: "var(--warn-soft)", borderLeft: "4px solid var(--warn)" }}>
+      {categoryBar}
       <div style={{ fontWeight: 700, marginBottom: "6px" }}>
         Meesho required fields ({missing.fields.length + seller.length} missing)
       </div>

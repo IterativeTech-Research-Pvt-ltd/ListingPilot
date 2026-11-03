@@ -155,6 +155,23 @@ class SettingsService:
         return cls.get_seller_details()
 
     @classmethod
+    def get_meesho_category_defaults(cls) -> Dict[str, str]:
+        """{seller category: Meesho template id} the seller chose for every product in that category."""
+        return dict(cls._ensure_loaded().get("meesho_category_defaults", {}))
+
+    @classmethod
+    def set_meesho_category_default(cls, category: str, template_id: Optional[str]) -> Dict[str, str]:
+        """Saves (or with no template_id, clears) one category's default; the caller validates the id."""
+        data = cls._ensure_loaded()
+        defaults = {k: v for k, v in data.get("meesho_category_defaults", {}).items()
+                    if k.strip().lower() != category.strip().lower()}
+        if template_id:
+            defaults[category.strip()] = template_id
+        data["meesho_category_defaults"] = defaults
+        cls._save(data)
+        return dict(defaults)
+
+    @classmethod
     def get_brand_voice(cls) -> Dict[str, str]:
         """Retrieves brand voice for AIService prompts (ADM-1)."""
         data = cls._ensure_loaded()

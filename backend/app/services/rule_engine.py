@@ -4,6 +4,7 @@ from app.models.product import Product
 from app.services.template_generator import CATEGORIES_INFO
 from app.services.settings_service import SettingsService
 from app.services.meesho_adapter import MEESHO_FLAGGED_WORDS
+from app.services.marketplace_limits import title_limit
 
 HTML_TAG_PATTERN = re.compile(r"<[^>]+>", re.IGNORECASE)
 
@@ -117,28 +118,12 @@ class RuleEngine:
             t_len = len(title)
             if t_len == 0:
                 issues.append({"level": "error", "kind": "title", "field": "title", "message": "Listing title is empty."})
-            elif mp == "amazon" and t_len > 200:
+            elif t_len > title_limit(mp):
                 issues.append({
                     "level": "error",
                     "kind": "title",
                     "field": "title",
-                    "message": f"Title is {t_len} characters long; Amazon strictly caps titles at 200 characters."
-                })
-                title_score = 2
-            elif mp == "flipkart" and t_len > 120:
-                issues.append({
-                    "level": "error",
-                    "kind": "title",
-                    "field": "title",
-                    "message": f"Title is {t_len} characters long; Flipkart recommends titles under 120 characters."
-                })
-                title_score = 2
-            elif mp == "meesho" and t_len > 100:
-                issues.append({
-                    "level": "error",
-                    "kind": "title",
-                    "field": "title",
-                    "message": f"Title is {t_len} characters long; Meesho supplier catalog strictly caps titles at 100 characters."
+                    "message": f"Title is {t_len} characters long; {mp.capitalize()} caps titles at {title_limit(mp)} characters."
                 })
                 title_score = 2
             elif t_len < 40:

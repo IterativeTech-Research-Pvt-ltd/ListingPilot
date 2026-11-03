@@ -16,7 +16,7 @@ from app.services.ai_service import AIService
 from app.services.rule_engine import RuleEngine
 from app.services.amazon_adapter import AmazonAdapter
 from app.services.flipkart_adapter import FlipkartAdapter
-from app.services.meesho_adapter import MeeshoAdapter, MeeshoExportIncomplete
+from app.services.meesho_adapter import MeeshoAdapter, MeeshoExportIncomplete, MEESHO_CATEGORY_ATTR, BREADCRUMB_SEP
 from app.services.settings_service import SettingsService
 from app.tasks.batch_tasks import (
     generate_batch_drafts_task,
@@ -626,74 +626,103 @@ def get_marketplace_status(
 
 # ── Meesho Bulk Catalog Sheet Export (MSH-1) ──────────────────────────────────
 
-@router.get("/meesho/export", summary="Export pre-filled Meesho Bulk Catalog Excel sheet (MSH-1)")
-def export_meesho_catalog(
-    category: Optional[str] = Query(None, description="Category filter"),
-    as_zip: bool = Query(False, description="Package multiple categories as a .zip file"),
-    db: Session = Depends(get_db)
-):
+def _meesho_items(db: Session, category: Optional[str], product_ids: Optional[str]) -> List[Dict[str, Any]]:
+    """
+    The products of one Meesho upload, each with its Meesho draft: the selected product ids when
+    given (an id that doesn't exist is an error, never dropped), else a category, else every product.
+    """
     query = db.query(Product)
-    if category and category != "All":
-        query = query.filter(Product.category == category)
-    products = query.order_by(Product.id.asc()).all()
-
+    if product_ids is not None:
+        try:
+            ids = [int(x) for x in product_ids.split(",") if x.strip()]
+        except ValueError:
+            raise HTTPException(status_code=422, detail="product_ids must be comma-separated product ids.")
+        if not ids:
+            raise HTTPException(status_code=422, detail="No products selected for the Meesho upload.")
+        products = query.filter(Product.id.in_(ids)).order_by(Product.id.asc()).all()
+        unknown = sorted(set(ids) - {p.id for p in products})
+        if unknown:
+            raise HTTPException(status_code=404, detail=f"Products not found: {', '.join(map(str, unknown))}.")
+    else:
+        if category and category != "All":
+            query = query.filter(Product.category == category)
+        products = query.order_by(Product.id.asc()).all()
     if not products:
-        raise HTTPException(status_code=404, detail="No products found to generate Meesho bulk catalog.")
-
-    drafts = _drafts_by_product(db, products, "meesho")
-    items = []
-    for prod in products:
-        draft = drafts.get((prod.id, "meesho"))
-        items.append({
-            "product": prod,
-            "draft": draft.to_dict() if draft else None
-        })
-
-    try:
-        buf, media_type, filename, skipped = MeeshoAdapter.generate_batch_export(items, category_filter=category, force_zip=as_zip)
-    except MeeshoExportIncomplete as e:
-        # No file at all rather than one Meesho rejects or that carries values we made up
-        raise HTTPException(status_code=422, detail={
-            "message": f"Meesho export blocked: {len(e.problems)} problem(s) must be fixed in the product data first.",
-            "problems": e.problems,
-        })
-    SettingsService.record_sync("meesho")
-    # Products left out for lack of an official template, {category: [sku, ...]}, so the UI can say so
-    skipped_by_cat: Dict[str, List[str]] = {}
-    for p in skipped:
-        skipped_by_cat.setdefault(p["category"], []).append(p["sku"])
-    return StreamingResponse(
-        buf,
-        media_type=media_type,
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-            "X-Meesho-Skipped": json.dumps(skipped_by_cat),
-        }
-    )
-
-
-@router.get("/meesho/fill-in-sheet", summary="Download the Meesho fields each product is missing, ready to fill and re-import")
-def meesho_fill_in_sheet(
-    category: Optional[str] = Query(None, description="Category filter"),
-    db: Session = Depends(get_db)
-):
-    query = db.query(Product)
-    if category and category != "All":
-        query = query.filter(Product.category == category)
-    products = query.order_by(Product.id.asc()).all()
-    if not products:
-        raise HTTPException(status_code=404, detail="No products found.")
-
+        raise HTTPException(status_code=404, detail="No products found for the Meesho upload.")
     drafts = _drafts_by_product(db, products, "meesho")
     items = []
     for prod in products:
         draft = drafts.get((prod.id, "meesho"))
         items.append({"product": prod, "draft": draft.to_dict() if draft else None})
+    return items
 
+
+@router.get("/meesho/export", summary="Export pre-filled Meesho Bulk Catalog Excel sheet (MSH-1)")
+def export_meesho_catalog(
+    product_ids: Optional[str] = Query(None, description="Comma-separated ids of the products in this upload"),
+    category: Optional[str] = Query(None, description="Category filter, when no products are selected"),
+    as_zip: bool = Query(False, description="Package multiple categories as a .zip file"),
+    db: Session = Depends(get_db)
+):
+    """All or nothing: the file is made only when every product in the upload passes every check."""
+    items = _meesho_items(db, category, product_ids)
+    try:
+        buf, media_type, filename = MeeshoAdapter.generate_batch_export(items, force_zip=as_zip)
+    except MeeshoExportIncomplete as e:
+        # No file at all rather than one Meesho rejects or that carries values we made up
+        skus = {p["sku"] for p in e.problems if p["blocking"]}
+        raise HTTPException(status_code=422, detail={
+            "message": f"Meesho export blocked: {len(skus)} of {len(items)} product(s) aren't ready. "
+                       f"Fix them or take them out of this upload.",
+            "problems": e.problems,
+        })
+    SettingsService.record_sync("meesho")
+    return StreamingResponse(
+        buf,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+@router.get("/meesho/readiness", summary="Whether each product of a Meesho upload passes the export's checks")
+def meesho_readiness(
+    product_ids: Optional[str] = Query(None, description="Comma-separated ids of the products in this upload; all products when omitted"),
+    db: Session = Depends(get_db)
+):
+    """
+    Each product with its Meesho category and its blocking problems, by the export's own checks.
+    Checked together, as the upload would be: two products sharing a Product Name both show it.
+    """
+    items = _meesho_items(db, None, product_ids)
+    by_sku = MeeshoAdapter.check_items(items)
+    rows = []
+    for item in items:
+        product = item["product"]
+        tmpl, _ = MeeshoAdapter.resolve_item_template(item)
+        problems = by_sku.get(product.sku, [])
+        rows.append({
+            "id": product.id,
+            "sku": product.sku,
+            "name": product.name,
+            "category": product.category,
+            "meesho_category": tmpl["breadcrumb"] if tmpl else None,
+            "ready": not problems,
+            "problems": [{"field": p["field"], "reason": p["reason"]} for p in problems],
+        })
+    return {"products": rows, "ready": sum(1 for r in rows if r["ready"]), "total": len(rows)}
+
+
+@router.get("/meesho/fill-in-sheet", summary="Download the Meesho fields each product is missing, ready to fill and re-import")
+def meesho_fill_in_sheet(
+    product_ids: Optional[str] = Query(None, description="Comma-separated ids of the products in this upload"),
+    category: Optional[str] = Query(None, description="Category filter, when no products are selected"),
+    db: Session = Depends(get_db)
+):
+    items = _meesho_items(db, category, product_ids)
     buf = MeeshoAdapter.build_fill_in_sheet(items)
     if buf is None:
         raise HTTPException(status_code=404, detail="Nothing to fill: these products have every compulsory Meesho field.")
-    safe_cat = re.sub(r"[^a-zA-Z0-9_-]", "_", category or "All")
+    safe_cat = re.sub(r"[^a-zA-Z0-9_-]", "_", "Selection" if product_ids is not None else (category or "All"))
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -722,39 +751,100 @@ def get_meesho_missing_fields(product_id: int, db: Session = Depends(get_db)):
 def save_meesho_missing_fields(product_id: int, payload: MeeshoFieldValues, db: Session = Depends(get_db)):
     """
     Merges the given values into the product's attributes (other attributes are untouched).
-    Each key must be one of the category template's fields, and a dropdown value must be one of the
-    template's options exactly as spelled; otherwise nothing is saved.
+    Each key must be one of the product's template's fields, and a dropdown value must be one of the
+    template's options exactly as spelled; otherwise nothing is saved. 'Meesho Category' picks the
+    template: an official template's id or breadcrumb, saved as the id; empty removes the product's
+    own choice so its category's default applies.
     """
     product = db.query(Product).filter(Product.id == product_id).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
-    allowed = MeeshoAdapter.seller_fields(product.category)
-    if not allowed:
-        raise HTTPException(status_code=422, detail=f"No official Meesho template for '{product.category}'.")
+    tmpl, _ = MeeshoAdapter.resolve_item_template({"product": product})
+    allowed = MeeshoAdapter.seller_fields(tmpl)
 
-    errors, clean = [], {}
+    errors, clean, removed = [], {}, set()
     for attr, value in payload.values.items():
         value = (value or "").strip()
         spec = allowed.get(attr)
-        if spec is None:
-            errors.append(f"'{attr}' is not a field of the {product.category} template")
+        if attr == MEESHO_CATEGORY_ATTR:
+            entry = MeeshoAdapter.template_by_ref(value)
+            if not value:
+                removed.add(attr)
+            elif entry:
+                clean[attr] = entry["id"]
+            else:
+                errors.append(f"'{value}' is not an official Meesho category")
+        elif spec is None:
+            errors.append(f"'{attr}' is not a field of the {tmpl['category'] if tmpl else product.category} template"
+                          + ("" if tmpl else f"; set '{MEESHO_CATEGORY_ATTR}' first"))
         elif not value:
             errors.append(f"'{attr}' is empty")
         elif spec["options"] and value not in spec["options"]:
             errors.append(f"'{value}' is not one of the template's options for '{spec['field']}'")
         else:
             clean[attr] = value
-    if errors or not clean:
+    if errors or not (clean or removed):
         raise HTTPException(status_code=422, detail={"message": "Nothing saved.", "errors": errors or ["No values given."]})
 
     # A new dict, so SQLAlchemy sees the JSON column change
-    product.attributes = {**(product.attributes or {}), **clean}
+    kept = {k: v for k, v in (product.attributes or {}).items() if k.strip().lower() not in {r.lower() for r in removed}}
+    product.attributes = {**kept, **clean}
     db.commit()
     db.refresh(product)
     return {
         "product": ProductResponse.model_validate(product).model_dump(mode="json"),
         "missing": _meesho_missing(db, product),
     }
+
+
+@router.get("/meesho/taxonomy", summary="Meesho's category tree (4 levels), each leaf with its template id")
+def get_meesho_taxonomy():
+    """The same tree as the supplier panel's Bulk Catalog Upload, for the category picker."""
+    return {"separator": BREADCRUMB_SEP, "tree": MeeshoAdapter.taxonomy_tree()}
+
+
+class MeeshoCategoryDefault(BaseModel):
+    category: str
+    meesho_category: Optional[str] = None  # template id or breadcrumb; empty clears the default
+
+
+def _meesho_category_defaults(db: Session) -> List[Dict[str, Any]]:
+    """Every seller category (with its product count) and the Meesho category chosen for it, if any."""
+    counts = dict(db.query(Product.category, func.count(Product.id)).group_by(Product.category).all())
+    saved = SettingsService.get_meesho_category_defaults()
+    rows = []
+    for category in sorted(set(counts) | set(saved), key=lambda c: (c or "").lower()):
+        entry = MeeshoAdapter.template_by_ref(saved.get(category))
+        rows.append({
+            "category": category,
+            "products": counts.get(category, 0),
+            "id": entry["id"] if entry else None,
+            "breadcrumb": entry["breadcrumb"] if entry else None,
+            # A saved id that no longer names a template is shown, not hidden
+            "invalid_value": saved.get(category) if saved.get(category) and not entry else None,
+            # Templates the category's name could mean, offered in the picker; never saved unasked
+            "suggestions": [{"id": c["id"], "breadcrumb": c["breadcrumb"]} for c in MeeshoAdapter.template_candidates(category)][:8],
+        })
+    return rows
+
+
+@router.get("/meesho/category-defaults", summary="The Meesho category chosen for each seller category")
+def get_meesho_category_defaults(db: Session = Depends(get_db)):
+    return {"defaults": _meesho_category_defaults(db)}
+
+
+@router.put("/meesho/category-defaults", summary="Choose (or clear) the Meesho category for every product in a seller category")
+def set_meesho_category_default(payload: MeeshoCategoryDefault, db: Session = Depends(get_db)):
+    """A product's own 'Meesho Category' still wins over its category's default."""
+    category = (payload.category or "").strip()
+    if not category:
+        raise HTTPException(status_code=422, detail="Category is required.")
+    value = (payload.meesho_category or "").strip()
+    entry = MeeshoAdapter.template_by_ref(value) if value else None
+    if value and not entry:
+        raise HTTPException(status_code=422, detail=f"'{value}' is not an official Meesho category.")
+    SettingsService.set_meesho_category_default(category, entry["id"] if entry else None)
+    return {"defaults": _meesho_category_defaults(db)}
 
 
 @router.get("/meesho/templates", summary="List available official Meesho category templates")

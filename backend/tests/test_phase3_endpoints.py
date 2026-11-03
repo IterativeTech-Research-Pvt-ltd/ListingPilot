@@ -68,14 +68,14 @@ def test_meesho_adapter():
     ]
     # The item has no HSN, GST, weight or legal-metrology data: no file, and the gaps are named
     with pytest.raises(MeeshoExportIncomplete) as exc:
-        MeeshoAdapter.generate_bulk_upload_file("Bedsheets", sample_items)
+        MeeshoAdapter.generate_bulk_upload_file("Home & Kitchen/Home Furnishings/Bedding & Linen/Bedsheets", sample_items)
     missing = {p["field"] for p in exc.value.problems if p["sku"] == "JBP-101"}
     assert {"Manufacturer Name", "Country of Origin"} <= missing
     assert any(f.startswith("HSN") for f in missing)  # "HSN ID" in the official template
 
 def test_multichannel_rule_engine():
     # Test title limits per marketplace:
-    # Amazon <= 200, Flipkart <= 120, Meesho <= 100
+    # Amazon <= 75, Flipkart <= 120, Meesho <= 100
     mock_product = Product(
         sku="TEST-SKU",
         name="Artisan Bed Cover",
@@ -87,15 +87,22 @@ def test_multichannel_rule_engine():
         attributes={"Material": "Cotton", "Size": "Double", "Thread count": "180 TC", "Care": "Machine wash"}
     )
 
-    long_title = "A" * 110 # Valid for Amazon, Valid for Flipkart, EXCEEDS Meesho 100
+    long_title = "A" * 110 # Valid for Flipkart, EXCEEDS Meesho 100 and Amazon 75
 
     draft_meesho = {"title": long_title, "bullets": ["b1", "b2", "b3"], "description": "clean"}
     res_msh = RuleEngine.evaluate(mock_product, draft_meesho, marketplace="meesho")
     assert res_msh["checks_summary"]["title_length_ok"] is False
     assert any("Meesho" in i["message"] for i in res_msh["issues"])
 
-    draft_amz = {"title": long_title, "bullets": ["b1", "b2", "b3", "b4", "b5"], "description": "clean"}
-    res_amz = RuleEngine.evaluate(mock_product, draft_amz, marketplace="amazon")
+    draft_fk = {"title": long_title, "bullets": ["b1", "b2", "b3"], "description": "clean"}
+    assert RuleEngine.evaluate(mock_product, draft_fk, marketplace="flipkart")["checks_summary"]["title_length_ok"] is True
+
+    bullets5 = ["b1", "b2", "b3", "b4", "b5"]
+    res_amz = RuleEngine.evaluate(mock_product, {"title": long_title, "bullets": bullets5, "description": "clean"}, marketplace="amazon")
+    assert res_amz["checks_summary"]["title_length_ok"] is False
+    assert any("75 characters" in i["message"] for i in res_amz["issues"])
+    # The prompt asks for 90% (67), but anything up to the limit itself passes
+    res_amz = RuleEngine.evaluate(mock_product, {"title": "A" * 75, "bullets": bullets5, "description": "clean"}, marketplace="amazon")
     assert res_amz["checks_summary"]["title_length_ok"] is True
 
     # Test Meesho plain text check (No HTML)

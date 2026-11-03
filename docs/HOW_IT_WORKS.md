@@ -64,7 +64,7 @@ Start command: `uvicorn app.main:app --app-dir backend --port 8000`.
 4. **Celery** (`backend/app/core/celery_app.py:12-50`): pings Redis at `CELERY_BROKER_URL` with a 0.5 s timeout. If unreachable, or `CELERY_TASK_ALWAYS_EAGER=true`, it uses `memory://` / `cache+memory://` and runs tasks inline in the API process.
 5. **App wiring** (`main.py`): CORS for `BACKEND_CORS_ORIGINS`, exposing `Content-Disposition` so the dashboard can name downloaded exports; a middleware printing `[METHOD] path -> status (ms)` for every request (`main.py:43`); routers under `/api/v1` (`main.py:50`); `backend/uploads/` served at `/static/uploads` (`main.py:51`); `GET /` returns a banner (`main.py:54`).
 6. **Settings file.** `backend/app/data/dynamic_settings.json` is created with defaults the first time settings are read (`settings_service.py:78`). `LISTINGPILOT_SETTINGS_FILE` overrides the path.
-7. **Meesho templates** are scanned lazily on first use and cached in memory for the life of the process (`meesho_adapter.py:81`).
+7. **Meesho templates** are indexed by folder path on first use (about 0.6 s for 3,787 files, no workbook opened); a template's workbook is read only when an export uses it. Both are cached for the life of the process (`meesho_adapter.py:140`, `:179`).
 
 ### Frontend
 
@@ -144,8 +144,8 @@ The Amazon and Flipkart cards show the real mode: Amazon "Stub mode" unless the 
 | --- | --- | --- |
 | Status grid | `GET /drafts/marketplace-status?category=&search=` | One row per product: for each marketplace, draft ID, status (`not_started` if no draft), approval, external ID, score, error flag, last sync, rejection reason (`get_marketplace_status`). Loads all drafts in one query (`_drafts_by_product`); ~2 s for 19 products against the remote database (measured on Neon), where a query per cell took 25 s |
 | Jump to a draft | — | Switches to the Drafts tab |
-| Download Meesho sheet (category or All) | `GET /drafts/meesho/export?category=` or `?as_zip=true` (`handleDownloadMeeshoSheet`, `page.js:1044`) | `MeeshoAdapter.generate_batch_export` (§7.3); records a Meesho sync time |
-| Templates and taxonomy modal (`page.js:4374`) | `GET /drafts/meesho/templates`, `GET /drafts/meesho/categories?search=` | Lists templates found on disk; searches `docs/meesho/categories/meeshoCategories.json` |
+| Meesho Upload panel (`components/MeeshoUploadPanel.jsx`, the Meesho card's and action bar's "Meesho Upload" buttons) | `GET /drafts/meesho/readiness`, `GET /drafts/meesho/export?product_ids=&as_zip=true`, `GET /drafts/meesho/fill-in-sheet?product_ids=` | Lists every product grouped by Meesho category with a ready / problems badge (click for the reasons). The seller ticks the products for this upload (kept in this browser's localStorage); "Recheck selection" checks just those together. Export is disabled until every ticked product is ready; the server checks again and answers 422 otherwise. "Fill-in sheet for the not-ready" downloads the sheet for those products. A successful export records a Meesho sync time |
+| Templates and taxonomy modal (`page.js:4020`) | `GET /drafts/meesho/templates`, `GET /drafts/meesho/categories?search=` | Shows how many templates were found on disk (not one card each); searches `docs/meesho/categories/meeshoCategories.json`, each leaf marked by whether a template exists at its exact path |
 
 ### 3.5 Reports tab (`page.js:2995`)
 
@@ -177,7 +177,7 @@ File: `backend/app/services/ai_service.py`.
 
 `PROMPT_SYSTEM` (`ai_service.py:17-63`) is filled with the brand voice from Settings. The user prompt (`generate_listing`, `:68-95`) has SKU, name, category, brand, price, all attributes, notes, the target marketplace, and Amazon product-type guidance from `AmazonPTDService.get_category_prompt_guidance` (`amazon_ptd_service.py:826`).
 
-Rules stated in the prompt: title under **200 / 120 / 100** characters for Amazon / Flipkart / Meesho (`ai_service.py:30`); exactly 5 bullets; 2–3 paragraph description; 5–8 keywords **within 250 bytes** (`:33`); technical specs only as stated in the attributes (no warranty, weight, origin, manufacturer or certifications that weren't given); A+ content (headline, brand story, 3 feature cards, comparison table); use only supplied data (`:27`); no promotional claims (`:36`). Output must be strict JSON.
+Rules stated in the prompt: a title of at most **90 % of the target marketplace's limit** and keywords within 90 % of its byte limit (`ai_service.py:50`, `:53`, filled at `:105`). Limits live in `backend/app/services/marketplace_limits.py`, shared with the rule engine: titles 75 / 120 / 100 characters (Amazon / Flipkart / Meesho), keywords 200 bytes on Amazon.in and 250 elsewhere, so the prompt asks for 67 / 108 / 90 characters and 180 / 225 / 225 bytes. The other 10 % is buffer, so copy rarely overflows and needs regenerating; the rule engine still accepts anything up to the full limit. Only the target marketplace's numbers appear in the prompt. Also: exactly 5 bullets; 2–3 paragraph description; 5–8 keywords; technical specs only as stated in the attributes (no warranty, weight, origin, manufacturer or certifications that weren't given); A+ content (headline, brand story, 3 feature cards, comparison table); use only supplied data (`:27`); no promotional claims (`:36`). Output must be strict JSON.
 
 For **Meesho** the user prompt adds: don't use the words Meesho QC flags (`MEESHO_FLAGGED_WORDS` in `meesho_adapter.py`: care, comfort, colors), head bullet 5 "WASH & MAINTENANCE", and give each product its own title.
 
@@ -238,7 +238,7 @@ File: `backend/app/services/rule_engine.py`, `RuleEngine.evaluate(product, draft
 | 2 | Photo count | < 3 error (category min), < 5 warning | < 1 error, < 3 warning | < 1 error | `:39-91` |
 | 3 | Price > 0 | error | error | error | `:94-100` |
 | 4 | Title empty | error | error | error | `:115` |
-| 5 | Title length | > 200 error | > 120 error | > 100 error | `:118-140` |
+| 5 | Title length (`marketplace_limits.TITLE_CHAR_LIMITS`) | > 75 error | > 120 error | > 100 error | `:121-127` |
 | 6 | Title < 40 chars | warning | warning | warning | `:141-148` |
 | 7 | Banned claim in title, bullets or description (whole-word regex, case-insensitive; one hit per block reported) | error | error | error | `:153-172` |
 | 8 | HTML tag in description | — | — | error | `:175-181` |
@@ -303,17 +303,19 @@ If an attribute "Parent SKU" exists, child-variation fields with theme `COLOR_NA
 
 ### 7.3 Meesho (`backend/app/services/meesho_adapter.py`)
 
-**Templates.** `scan_available_templates` (`:81`) reads every `.xlsx` in `docs/meesho/templates/` (fallback `docs/templates/`). It takes column headers from row 3, compulsory markers from row 2 (`:118`), and dropdown option lists from the Validation Sheet. The 4 templates present are Bedsheets 10058, Shirts 10001, Sneakers 13178 and T-shirts 10000.
+**Templates.** All 3,787 official templates sit in `docs/meesho/Meesho Templates/<category path>/<name>-<id>-EXTERNAL-…xlsx`, one per Meesho category; `<id>` is Meesho's template id (Bedsheets 12776), unique across all of them. `template_index` (`:142`) lists them without opening any and gives each its real names from `meeshoCategories.json` as a breadcrumb (`Home & Kitchen > Home Furnishings > Bedding & Linen > Bedsheets`): the exact folder path first, then the same names with symbols ignored, because 39 names contain `/`, which their folders couldn't keep ("Memory / RAM" is saved as `Memory RAM`). Every category is exactly 4 levels deep, as in the supplier panel. `template_by_ref` (`:212`) finds a template by id, breadcrumb (any spacing or case around `>`) or folder path, exactly; nothing else matches. `_load_template` reads one when it's used: column headers from row 3, compulsory markers from row 2, dropdown option lists from the Validation Sheet. `GET /drafts/meesho/templates` lists id, category, breadcrumb and file for every template; `GET /drafts/meesho/taxonomy` (`drafts.py:771`) gives the 4-level tree with template ids for the picker.
 
-**Matching a category to a template** (`find_template`): normalised exact key → a full `meeshoCategories.json` path equal to the template's own path (else its last segment) → the **head noun** of each `&`/`,` part, with the one or two words before it joined on ("Double Bedsheets", "Bed Sheets", "Brother & Sister T-Shirts"; longest template name first so Tshirts beats Shirts) → the synonym tee → tshirts. Whole words only: "Steel bottles", "Diwans & Settees", "Teeth Whitening", "Sweatshirts", "Shirt Fabric" and "Men" match no template. Footwear and shoes are **not** mapped to Sneakers, and bedding/duvets are **not** mapped to Bedsheets: a product in another category's template fails Meesho QC.
+**Which template a product goes in** (`resolve_item_template`, `:434`): only the seller's choice decides (`meesho_choice`, `:418`): the product's own **`Meesho Category`** attribute (a template id, or a breadcrumb as typed in an imported sheet), else the default chosen for its category (`meesho_category_defaults` in the settings file, `GET|PUT /drafts/meesho/category-defaults`, `drafts.py:802`). A product with neither, or whose choice names no template, is left out with a `Template` problem (`_template_problem`, `:1089`); it is never placed by its name. The dashboard sets both with a 4-column picker like the supplier panel, with search (`components/MeeshoCategoryPicker.jsx`): per category in Admin & Settings → Brand Voice → **Meesho Categories** (`MeeshoCategoryDefaults.jsx`), per product in the product's Meesho box (`MeeshoRequiredFields.jsx`, with "Use category default" to drop the product's own choice). `PUT /drafts/meesho/missing-fields/{id}` saves `Meesho Category` as the template id and accepts only an official template's id or breadcrumb; an empty value removes it. The fill-in sheet asks unplaced products for it, with every breadcrumb as its dropdown.
 
-The Bedsheets template on disk (10058) is Meesho's **Kids & Toys/Accessories/Unisex/Bedsheets** category; the Home & Kitchen bedsheets leaf has no template of its own yet, so it uses this one.
+**Suggestions** (`suggest_templates`, `:448`) come from the category's name, looked up by `template_candidates`: a template reference → the normalised leaf name → the **head noun** of each `&`/`,` part, with the one or two words before it joined on ("Double Bedsheets", "Bed Sheets"; longest match first so Tshirts beats Shirts) → the synonym tee → tshirt. Whole words only: "Steel bottles", "Settees" and "Men" match nothing, and "Sweatshirts" matches Sweatshirts, not Shirts. Templates for another audience than the product's name states are left out (`AUDIENCE_SECTIONS`): "Women's straight kurta" isn't offered Men Fashion's Kurtas. Suggestions appear in the picker and in the problem text; even a single one is not used until the seller picks it.
+
+**Export** (`generate_batch_export`, `:913`) is **all or nothing**: it groups the given products by resolved template (`_group_by_template`, `:1164`), fills each one, and makes a file only when **every** product passes every check; otherwise it raises `MeeshoExportIncomplete` with all problems from all templates, and no file is made. Nothing is skipped quietly: a product without a Meesho category blocks like any other gap, and the seller fixes it or takes it out of the upload. Several templates always come back as one zip; two templates with the same leaf name (Men's and Women's Tshirts) get the template id in the file name (`ListingPilot_Meesho_Tshirts_10000.xlsx`). `check_items` (`:987`) runs the same checks without making a file, for readiness.
 
 **Filling** (`populate_template`) loads an in-memory copy of the template and writes one row per product starting at **row 5**. Every value comes from the product, its Meesho draft or simple arithmetic on them; nothing is defaulted (`_row_inputs`, `_template_value`). A product attribute named exactly like a template column always wins, so sellers can supply any Meesho field (e.g. `Manufacturer Pincode`, `Color`) directly. One exception (`SELLER_ATTRIBUTE_FOR_COLUMN`): the Bedsheets **Size** dropdown (Double Queen, Single, …) is read only from a **`Bed Size`** attribute, because `Size` holds the measurement ("90 x 100 in (double)" can't tell Double Queen from Double King). The fill-in sheet uses `Bed Size` as that column's header, so importing it never overwrites the measurement.
 
 | Column | Value written |
 | --- | --- |
-| Product name | Meesho draft title, else product name; HTML stripped; cut to 95 characters |
+| Product name | Meesho draft title, else product name; HTML stripped; never shortened (over 100 characters blocks) |
 | Meesho price / MRP / inventory | product price / product MRP / product stock, as stored |
 | Wrong/defective discount | attribute only (optional column, empty otherwise) |
 | Description | draft description + "Key Features:" bullets; without a draft, the product's own description |
@@ -332,13 +334,13 @@ The Bedsheets template on disk (10058) is Meesho's **Kids & Toys/Accessories/Uni
 
 **Dropdown columns** (`_match_dropdown_option`) take only high-confidence matches, returned with the template's exact spelling: exact (case-insensitive) → same number, with or without a unit ("180 TC" → "180") → exactly one option named as a whole word in the value ("100% cotton" → "Cotton", "90 x 100 in (double)" → "Double"; longest option wins, so "Navy Blue" beats "Blue"). Brand, HSN, GST, country, Group ID and colour accept only exact or numeric matches, so "Indigo and white" is not turned into "White" and Brand is never picked.
 
-**Problems** are collected per SKU: a compulsory column (row-2 "* Compulsory Field" marker) left empty, a value that isn't a template option, or several designs sharing one Product Name (Meesho merges them as sizes of one product and rejects the rows; distinct sizes of one Style ID may share a name). Any compulsory problem raises `MeeshoExportIncomplete`; non-compulsory ones (e.g. a brand not on Meesho's list) leave the cell empty and don't block.
+**Problems** are collected per SKU: a compulsory column (row-2 "* Compulsory Field" marker) left empty, a value that isn't a template option, or several designs sharing one Product Name (Meesho merges them as sizes of one product and rejects the rows; distinct sizes of one Style ID may share a name). Any compulsory problem raises `MeeshoExportIncomplete`; non-compulsory ones (e.g. a brand not on Meesho's list) leave the cell empty and don't block. **Upload rules** (`_upload_rule_problems`, `:733`), all blocking: the product's Meesho draft must exist and be **approved**; Product Name at most **100 characters** and free of a weight (`750 gm`), a dimension (`90 x 100`, `10 inch`), a price (`₹499`) or another marketplace's name (`PRODUCT_NAME_RULES`; bare units that are also words or model names, like `2 in 1`, `5G`, `3M`, aren't matched); no word Meesho's QC flags (`MEESHO_FLAGGED_WORDS`) in the title, description or bullets; **Meesho Price lower than MRP** and a Wrong/Defective discount below the Meesho Price (the template's own rules); every image link a web link that isn't Google Drive, a stock-photo site, a local address or ListingPilot's own storage (`UNUSABLE_IMAGE_LINKS`; the template asks for links from Meesho's Images Bulk Upload).
 
-**Export** (`generate_batch_export`) does **not** check approval: each product's Meesho draft is used whatever its status (an unapproved or just-edited draft included), and a product with no Meesho draft goes in with its own name and description. It groups products by category and fills each category's **official** template; one category returns the `.xlsx` (or a zip when `as_zip=true`, which the dashboard's "Full Catalog (ZIP)" sends), several always return a zip (`ListingPilot_Meesho_Batch_<YYYYMMDD_HHMM>.zip`), so no category is dropped. Products in a category with no official template are **skipped**: nothing is written for them, the rest still export, and the response header `X-Meesho-Skipped` (`{category: [sku, ...]}`, exposed via CORS) lets the dashboard toast which SKUs were left out and why. Only when every product is skipped is it an error (422). There is no stand-in workbook, and nothing is added to the template's sheets. Missing data in a category that does have a template still blocks the whole export. Problems from all categories are gathered into one `MeeshoExportIncomplete`, and `GET /drafts/meesho/export` answers **422** with `detail: {message, problems: [{sku, category, field, reason, blocking}]}` instead of a file.
+`GET /drafts/meesho/export` (`drafts.py:660`) takes the upload's `product_ids` (else a `category`, else every product; an id that doesn't exist is a 404, never dropped) and answers **422** with `detail: {message, problems: [{sku, category, field, reason, blocking}]}` instead of a file when anything blocks. `GET /drafts/meesho/readiness?product_ids=` (`:687`) returns each product's Meesho category, `ready`, and its blocking problems, checked together as the upload would be; all products when no ids are given.
 
-**Fill-in sheet** (`build_fill_in_sheet`, `GET /drafts/meesho/fill-in-sheet?category=`): a workbook with a "Fill in" sheet (SKU, name, category, one column per blocking field using the template's own column names, highlighted where that SKU needs it, plus the current image links, with Image 1 highlighted when it is missing), Excel dropdowns with the template's exact options ("Allowed values"), "What's wrong" (every problem) and "How to use". Importing it in the Catalogue tab stores the values as attributes, which the export then reads. When the export is blocked, the frontend downloads this sheet automatically; its toast also names the blockers the sheet can't fix (categories with no official template, SKUs sharing a Product Name).
+**Fill-in sheet** (`build_fill_in_sheet`, `GET /drafts/meesho/fill-in-sheet?product_ids=` or `?category=`): a workbook with a "Fill in" sheet (SKU, name, category, one column per blocking field using the template's own column names, highlighted where that SKU needs it, plus the current image links, with Image 1 highlighted when it is missing), Excel dropdowns with the template's exact options ("Allowed values"), "What's wrong" (every problem) and "How to use". A product without a Meesho category gets a **Meesho Category** column, with every category's breadcrumb as its dropdown, so the sheet is produced even when that is the only gap. Importing it in the Catalogue tab stores the values as attributes, which the export then reads. The Meesho Upload panel downloads it for the not-ready products on request; blockers a cell can't fix (approval, Product Name, image links) are listed under "What's wrong".
 
-**Meesho required fields form** (`missing_fields`, `GET|PUT /drafts/meesho/missing-fields/{product_id}`, `frontend/app/components/MeeshoRequiredFields.jsx`): runs the export's own checks on one product and lists each blocking field with the attribute it is saved under (e.g. `Bed Size` for Bedsheets' Size) and the template's exact options; images and Product Name blockers are listed separately since a value can't fix them. PUT merges values into the product's attributes (other attributes untouched); every key must be a field of the category's template and every dropdown value one of its options exactly, otherwise **nothing** is saved (422). Nothing is pre-selected. Shown in AI Drafts & Review under the master data when the marketplace is Meesho, and in the product drawer's read-only view (not while editing, so the edit form's copy of the attributes can't overwrite a save). A category without a template shows that the product is skipped in Meesho exports.
+**Meesho required fields form** (`missing_fields`, `GET|PUT /drafts/meesho/missing-fields/{product_id}`, `frontend/app/components/MeeshoRequiredFields.jsx`): runs the export's own checks on one product and lists each blocking field with the attribute it is saved under (e.g. `Bed Size` for Bedsheets' Size) and the template's exact options; images and Product Name blockers are listed separately since a value can't fix them. PUT merges values into the product's attributes (other attributes untouched); every key must be a field of the category's template and every dropdown value one of its options exactly, otherwise **nothing** is saved (422). Nothing is pre-selected. Shown in AI Drafts & Review under the master data when the marketplace is Meesho, and in the product drawer's read-only view (not while editing, so the edit form's copy of the attributes can't overwrite a save). It also shows the product's Meesho category (or that none is chosen) with the picker (§7.3).
 
 **"Publish"** for Meesho returns **409** with upload instructions and changes nothing; the frontend shows the same instructions without calling it.
 
@@ -371,7 +373,7 @@ There are **no local fallbacks**. When a request fails or the backend answers no
 | Uploaded photos | `backend/uploads/` | URLs stored as `http://localhost:8000/static/uploads/...` |
 | Brand voice, banned claims, credentials, last-sync | `backend/app/data/dynamic_settings.json` | Gitignored; plain text; global (no workspace) |
 | Cached Amazon schemas | `backend/app/data/ptd_schemas/` | Only written by `fetch_live_ptd_schema`, which is unused |
-| Meesho master templates | `docs/meesho/templates/*.xlsx` | Read-only; copies are filled in memory |
+| Meesho master templates | `docs/meesho/Meesho Templates/<category path>/*.xlsx` | Read-only; copies are filled in memory |
 | Meesho category tree | `docs/meesho/categories/meeshoCategories.json` | Used for search and template matching |
 | Server secrets | `.env` (root) | Gitignored; template `.env.example` |
 | AI rate-limit cooldowns | Process memory | Lost on restart |
@@ -440,14 +442,14 @@ cd frontend; npm install; npm run dev        # http://localhost:3000
 | `test_catalogue_api.py` | 5 | CRUD, stats, categories |
 | `test_import_export.py` | 4 | Template, imports (a row without SKU is an error), exports |
 | `test_ai_drafts.py` | 4 | Generate + rules, edit/approve gate, preview |
-| `test_ai_groq.py` | 12 | Groq provider, rate-limit cooldown and waits, generation source, normalising incomplete model output, rejecting a reply with the description in the bullets |
+| `test_ai_groq.py` | 14 (16 cases) | Groq provider, rate-limit cooldown and waits, generation source, normalising incomplete model output, rejecting a reply with the description in the bullets, prompt asking for 90 % of each marketplace's limits, template-copy titles within the Amazon limit |
 | `test_phase2_endpoints.py` | 6 | Amazon publish/payloads, status grid, reports |
 | `test_phase3_endpoints.py` | 9 | Flipkart stub, Meesho templates/export refusal/dropdowns |
-| `test_meesho_export.py` | 20 (43 cases) | Meesho values from product data only, high-confidence dropdown matching, whole-word template matching, exact Fabric/Pattern columns, blocking problems, fill-in sheet, 422 endpoint, flagged words, case-insensitive required attributes |
+| `test_meesho_export.py` | 50 (88 cases) | Meesho values from product data only, high-confidence dropdown matching, whole-word template matching, name matches only suggest, audience-aware suggestions, template ids and real names (incl. '/'), category defaults and product choice, taxonomy and category-default endpoints, all-or-nothing export, readiness and selection endpoints, approval, title length, Product Name, flagged-word, price and image-link rules, Meesho Category from fill-in sheet and endpoint, lazy template loading, one zip file per template, exact Fabric/Pattern columns, blocking problems, fill-in sheet, 422 endpoint, flagged words, case-insensitive required attributes |
 | `test_no_invented_data.py` | 8 | Exact header matching, no invented MRP/images, seed never overwrites, Meesho publish refused, AI and Amazon Legal Metrology from attributes only (not from draft specs) |
 | `test_phase4_endpoints.py` | 5 | Brand voice, banned claims, credential masking, health |
 | `test_celery_tasks.py` | 4 | Task registration, generate dispatch, status |
-| **Total** | **77** (100 cases) | |
+| **Total** | **115** (155 cases) | |
 
 Not covered: the batch-publish task, live Amazon/Flipkart paths, the OpenRouter cascade, and the whole frontend.
 
@@ -491,7 +493,11 @@ Base URL `http://127.0.0.1:8000/api/v1` (no authentication). Routers are wired i
 | GET | `/drafts/{id}/amazon-payload` | `:442` |
 | GET | `/drafts/{id}/aplus-payload` | `:476` |
 | GET | `/drafts/marketplace-status?category=&search=` | `:513` |
-| GET | `/drafts/meesho/export?category=&as_zip=` | `:587` |
+| GET | `/drafts/meesho/export?product_ids=&category=&as_zip=` | `:660` |
+| GET | `/drafts/meesho/readiness?product_ids=` | `:687` |
+| GET | `/drafts/meesho/fill-in-sheet?product_ids=&category=` | `:715` |
+| GET | `/drafts/meesho/taxonomy` | `:771` |
+| GET, PUT | `/drafts/meesho/category-defaults` | `:802` |
 | GET | `/drafts/meesho/templates` | `:621` |
 | GET | `/drafts/meesho/categories?search=&limit=` | `:632` |
 | GET | `/drafts/credentials-status` | `:648` |
@@ -528,8 +534,7 @@ Also `GET /` (banner) and `/static/uploads/*` outside `/api/v1`.
 **Data written that wasn't supplied**
 
 **Against current marketplace rules**
-- Amazon title limit 200 in rules and prompt; Amazon.in now enforces 75 and has Item Highlights (not modelled).
-- Keywords "within 250 bytes" in the prompt; Amazon.in's limit is under 200.
+- Amazon Item Highlights (≤ 125 characters) are not modelled; the 75-character title limit is.
 - Meesho image cells carry local/Unsplash URLs; Meesho needs links from its own uploader.
 - Rule-engine required attributes come from 6 hard-coded categories; the Meesho export itself now uses the template's compulsory markers.
 
@@ -541,7 +546,7 @@ Also `GET /` (banner) and `/static/uploads/*` outside `/api/v1`.
 **Missing**
 - Amazon: status polling / real ASIN, price/stock update, GTIN search, validation preview.
 - Flipkart: any live call; Settings credentials.
-- Meesho: official templates for Pooja items, Kurtas, Planters, Quilts, Ethnic footwear (export blocks until they're added); processed-file import.
+- Meesho: no pilot category has a Meesho category chosen yet (Admin & Settings → Meesho Categories); photo intake to storage, image ZIP and link paste-back; upload checklist; drafts aren't marked "exported"; processed-file import.
 - Import screen doesn't show row errors.
 - Rule limits and required attributes not editable.
 - No workspaces/users, audit log, Setup wizard, encrypted credentials, migrations, login.

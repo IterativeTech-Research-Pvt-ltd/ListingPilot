@@ -2,70 +2,74 @@
 
 ## Goal
 
-A single pilot seller takes real products to live listings on Amazon, accepted uploads on Meesho, and accepted uploads on Flipkart, and the UI never shows success for something that didn't happen.
+**Meesho first (decided 3 Nov 2026).** A single pilot seller takes real products from the master catalogue to accepted uploads on Meesho, and the UI never shows success for something that didn't happen. Amazon and Flipkart are paused until the Meesho workflow works end to end (see "After Meesho").
 
 ## Source documents
 
-- Spec: docs/ListingPilot_PRD_SRS_v1.1.md (single-seller MVP)
+- Spec: docs/ListingPilot_PRD_SRS_v1.1.md (single-seller MVP; Meesho: §3.3, §12.3, §13.3)
 - Current state: docs/HOW_IT_WORKS.md (what the code does today)
-- Meesho templates: docs/meesho/templates/\*.xlsx (read-only masters)
-- Flipkart templates: docs/flipkart/templates/\*.xlsx (read-only masters, to be added)
+- Meesho templates: docs/meesho/Meesho Templates/\<category path\>/\*.xlsx (read-only masters, all 3,787 categories)
+- Meesho taxonomy: docs/meesho/categories/meeshoCategories.json (4 levels, same tree as the supplier panel)
 
 ## Spec conflicts in current code (fix first)
 
 | Issue                                              | Fix                                                                                                                     |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| Amazon title limit 200                             | 75 chars (all non-media since 27 Jul 2026); add Item Highlights field ≤125 chars to draft model, prompt, rules, payload |
-| Amazon keywords "<250 bytes"                       | <200 bytes for Amazon.in, counted in UTF-8 bytes                                                                        |
 | Meesho values silently snapped to dropdown options | Exact or high-confidence matches only; low-confidence snaps go to a review list; NEVER snap Brand                       |
 | Meesho image cells use local/Unsplash URLs         | Image ZIP export + paste-back of Meesho panel-generated links; block export without Image 1                             |
 | Style ID = SKU, Group ID empty                     | Style ID = family+colour once variants exist; Group ID per design family                                                |
 | Meesho required fields from 6 hardcoded categories | Use the template's own "\* Compulsory Field" markers                                                                    |
+| Meesho export ignores approval and truncates titles | Export only approved drafts; block (never cut) titles over 100 characters                                              |
 | Silent SQLite fallback                             | Explicit DB via env; fail loudly if unreachable                                                                         |
 | Dashboard fakes success on failure                 | Remove; demo data only behind explicit DEMO_MODE flag                                                                   |
 | Fake ASIN/FSN/Meesho IDs                           | Remove; show honest "not published"/"exported" states                                                                   |
 
-## In scope for 20 Nov
+## The Meesho workflow (in scope for 20 Nov)
 
-- Catalogue import with visible row errors; real pilot data
-- AI copy for all 3 marketplaces with correct limits
-- Rules, edit, approve, approval gate
-- Amazon live: schema validation, validation preview, catalog search before create, publish, poll for real ASIN/issues, price/stock update
-- Meesho: valid filled templates for all pilot categories, image-link flow, processed-file import
-- Flipkart: template export for new products, FSN import from Seller Hub listings report, API price/stock for existing FSNs if access is granted
-- Honest UI, real health checks, encrypted credentials, migrations with workspace_id/user_id
+1. **Catalogue:** import with visible row errors; real pilot data; Legal Metrology fields and Seller Details complete.
+2. **Meesho category:** the seller picks it in a 4-level picker like the supplier panel (with search), shown as `A > B > C > D`. Stored by Meesho's template id; a default per seller category, overridable per product. Name matching only suggests, never decides.
+3. **Photos:** the seller adds real photos as a link or an uploaded PNG/JPEG/JPG file. Stored in free object storage (Supabase Storage proposed). Image 1 required; images 2–4 optional.
+4. **Copy:** AI Meesho copy within limits (prompt asks for 90 % of each limit); edit; approve.
+5. **Upload selection:** the seller adds or removes products from the current bulk upload; each shows ready / its problems.
+6. **Export gate (all-or-nothing):** the file is produced only when every selected product passes: approved draft, title ≤ 100 characters, no Meesho-flagged words, no weight/dimension/price/portal names in Product Name, Meesho Price < MRP, Wrong/Defective price < Meesho Price, every compulsory field filled with exact template values, Image 1 from Meesho's uploader.
+7. **Images for Meesho:** ZIP of the photos as JPEG/RGB `SKU_slot.jpg`; the seller uploads it in the panel's image uploader and pastes the links back; links matched to SKUs.
+8. **Delivery:** ZIP with one filled template per category plus an upload checklist (category path to pick per file, counts, reminder to return the processed file). Successful export marks drafts "exported", never "live".
+9. **Feedback:** import Meesho's processed file (ERROR STATUS / ERROR MESSAGE per row), store the reason on each draft, produce a correction sheet with only the failed rows.
+10. **Foundations kept:** honest UI, real health checks, encrypted credentials, migrations with workspace_id/user_id.
 
 ## Out of scope (do not build)
 
 AI image generation, Shipping Optimiser, returns advisor, full Product Flags engine, template-compiler CI, audit log UI, Setup wizard, A+ publishing, auth/login, Celery progress bar, duplicate-image detection, Flipkart processed-file import, large refactors of page.js.
 
+## After Meesho (paused, not before the Meesho workflow is done)
+
+- Amazon: Item Highlights (≤125 chars; the 75-char title and 200-byte keyword limits are already done, 2 Nov), schema validation, validation preview, catalog search, publish, ASIN polling, price/stock update
+- Flipkart: template parser and export, FSN import, API price/stock if access is granted
+- Paid storage or image CDN, if the free tier runs out
+
 ## Schedule
 
-| Dates     | Work                                                                                                                                                        |
-| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 28–31 Oct | Foundations: honest UI/reports/health; explicit DB; Alembic + workspace_id/user_id; encrypted credentials; remove fake IDs; Amazon limits + Item Highlights |
-| 2–3 Nov   | Amazon schema validation + validation preview; Meesho image ZIP + link paste-back                                                                           |
-| 4–5 Nov   | Amazon catalog search, publish, ASIN polling; Meesho validation, snapping review, IDs, name checks                                                          |
-| 5–7 Nov   | Flipkart template parser                                                                                                                                    |
-| 6 Nov     | Amazon price/stock; MILESTONE first real Meesho upload                                                                                                      |
-| 9–11 Nov  | Flipkart template export; MILESTONE first Flipkart upload 11 Nov                                                                                            |
-| 10 Nov    | MILESTONE Amazon go-live or validation-preview fallback decision                                                                                            |
-| 12 Nov    | FSN import; Meesho processed-file import                                                                                                                    |
-| 13 Nov    | Flipkart API price/stock (if access)                                                                                                                        |
-| 12–14 Nov | Remaining 5 Meesho templates; real catalogue import; Legal Metrology fields required                                                                        |
-| 16–17 Nov | End-to-end pilot run                                                                                                                                        |
-| 18 Nov    | MILESTONE feature freeze                                                                                                                                    |
-| 18–20 Nov | Fixes, docs, demo; MILESTONE MVP 20 Nov                                                                                                                     |
+| Dates     | Work                                                                                                                         |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 3 Nov     | **Done 3 Nov:** Meesho category picker (template id, breadcrumb, category defaults); storage decision (Supabase Storage)     |
+| 4 Nov     | **Done 3 Nov:** upload selection, readiness per product, all-or-nothing export gate                                          |
+| 4–5 Nov   | Photo intake (link or file → storage), JPEG/RGB image ZIP, link paste-back, upload checklist                                 |
+| 5 Nov     | Seller: Seller Details, real attributes and photos, Meesho categories; regenerate and approve Meesho drafts                  |
+| 6 Nov     | MILESTONE first real Meesho upload (at least 5 products)                                                                     |
+| 7–10 Nov  | Processed-file import + correction sheet (checked against the 6 Nov file); end-to-end test of every pilot template           |
+| 9–13 Nov  | QC feedback (~3 days) and fixes; upload the remaining pilot categories                                                       |
+| 16–17 Nov | End-to-end pilot run, all categories                                                                                         |
+| 18 Nov    | MILESTONE feature freeze                                                                                                     |
+| 18–20 Nov | Fixes, docs, demo; MILESTONE MVP 20 Nov                                                                                      |
 
 ## Priority if behind
 
-Honest UI > Amazon live > Meesho accepted > Flipkart template upload > Flipkart API.
+Honest UI > Meesho accepted > everything else.
 
 ## Definition of done
 
 - [ ] No screen shows success for a failed action; no fake ASIN/FSN/Meesho IDs
 - [ ] Real pilot catalogue in production DB with Legal Metrology fields complete
-- [ ] Amazon: live listings with real ASINs pulled back; a price/stock update confirmed
-- [ ] Meesho: all pilot categories uploaded and accepted (or rejections imported and fixed)
-- [ ] Flipkart: all pilot verticals uploaded and through QC; real FSNs imported; API price/stock if access granted
-- [ ] Current Amazon limits enforced; credentials encrypted; migrations with workspace_id/user_id; tests passing
+- [ ] Meesho: every pilot category uploaded and accepted (or rejections imported and fixed)
+- [ ] Meesho export refuses anything incomplete; processed-file errors come back to the drafts
+- [ ] Credentials encrypted; migrations with workspace_id/user_id; tests passing

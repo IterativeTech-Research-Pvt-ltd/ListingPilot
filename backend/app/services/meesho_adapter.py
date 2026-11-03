@@ -1,10 +1,10 @@
 """
 Meesho Supplier Panel Adapter & Agnostic Template Engine (MSH-1, MSH-2)
 Dynamically scans and populates official Meesho Supplier Panel Excel flat files (.xlsx)
-from `docs/meesho/templates` (or configured templates directory).
+from `docs/meesho/Meesho Templates/<category path>/`.
 
 Agnostic Design:
-  - Works with N number of official templates dropped into the templates directory.
+  - Works with N number of official templates, one per Meesho category folder; only the ones an export uses are opened.
   - Dynamically extracts column names from Row 3 (the official Meesho header definition).
   - Preserves 100% of the original workbook structure, data validation dropdowns ('Validation Sheet'),
     instructions, and example sheets.
@@ -26,12 +26,12 @@ from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 from app.core.config import settings
 from app.services.settings_service import SettingsService, SELLER_DETAIL_FIELDS
+from app.services.marketplace_limits import title_limit
 from app.models.product import Product
 from app.models.draft import ListingDraft
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
-PRIMARY_TEMPLATES_DIR = ROOT_DIR / "docs" / "meesho" / "templates"
-SECONDARY_TEMPLATES_DIR = ROOT_DIR / "docs" / "templates"
+TEMPLATES_DIR = ROOT_DIR / "docs" / "meesho" / "Meesho Templates"
 MEESHO_CATEGORIES_FILE = ROOT_DIR / "docs" / "meesho" / "categories" / "meeshoCategories.json"
 
 # Dropdown columns where a partial match would change meaning (identifiers, and colours, where
@@ -41,6 +41,43 @@ EXACT_MATCH_COLUMNS = ("hsn", "gst", "country", "group id", "color", "colour")
 # Template columns whose name clashes with an attribute that means something else: the Bedsheets
 # "Size" dropdown (Double Queen, Single...) is read from "Bed Size", since "Size" holds the measurement
 SELLER_ATTRIBUTE_FOR_COLUMN = {("bedsheets", "size"): "Bed Size"}
+
+# Product attribute holding the seller's Meesho category for the product: Meesho's template id
+# (as saved by the category picker) or its breadcrumb (as typed in an imported sheet)
+MEESHO_CATEGORY_ATTR = "Meesho Category"
+# Joins category levels the way they're shown and typed; no Meesho category name contains '>'
+BREADCRUMB_SEP = " > "
+
+# Top-level Meesho sections that serve one audience, and the words in a product name that state one;
+# a template found by name alone is not used for a product named for another audience
+AUDIENCE_SECTIONS = {
+    "men": ("men fashion", "men's grooming", "mens personal care & grooming"),
+    "women": ("women fashion", "women"),
+    "kids": ("kids", "kids & toys"),
+}
+AUDIENCE_WORDS = {
+    "men": r"\b(men|mens|men's|male)\b",
+    "women": r"\b(women|womens|women's|ladies|female)\b",
+    "kids": r"\b(kids?|kid's|boys?|boy's|girls?|girl's|baby|toddler|infant)\b",
+}
+
+MEESHO_TITLE_LIMIT = title_limit("meesho")
+# What the template says to keep out of Product Name ("weight, dimension, price") and other portals'
+# names. Bare units that are also common words or model names ("2 in 1", "5G", "3M") aren't matched.
+PRODUCT_NAME_RULES = [
+    ("a weight", r"\b\d+(?:\.\d+)?\s*(?:kg|kgs|gm|gms|grams?)\b"),
+    ("a dimension", r"\b\d+(?:\.\d+)?\s*[x×*]\s*\d+(?:\.\d+)?\b|\b\d+(?:\.\d+)?\s*(?:cm|mm|inch|inches|ft|feet|foot|meters?|metres?)\b|\b\d+(?:\.\d+)?\s*\""),
+    ("a price", r"₹|\brs\.?\s*\d|\binr\s*\d|\b\d+\s*(?:rs|rupees)\b"),
+    ("another marketplace's name", r"\b(?:amazon|flipkart|myntra|ajio|snapdeal|nykaa|jiomart|tata\s*cliq|shopsy|glowroad)\b"),
+]
+# Image links Meesho can't use: the template asks for links from its own Images Bulk Upload and
+# refuses Google Drive; stock photos and our own storage or machine aren't the seller's Meesho images
+UNUSABLE_IMAGE_LINKS = [
+    ("a Google Drive", r"\b(?:drive|docs)\.google\.com\b"),
+    ("a stock-photo", r"\b(?:unsplash\.com|pexels\.com|pixabay\.com|shutterstock\.com|istockphoto\.com)\b"),
+    ("a local", r"://(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|192\.168\.)"),
+    ("a ListingPilot storage", r"\.supabase\.co/storage/"),
+]
 
 # Meesho's catalogue QC flags these words in descriptions (seen in processed upload files)
 MEESHO_FLAGGED_WORDS = ("care", "comfort", "colors")
@@ -86,6 +123,14 @@ def _grams(text: Optional[str]) -> Optional[int]:
     return int(round(qty * 1000 if m.group(2).lower().startswith("kg") else qty))
 
 
+def _number(value: Any) -> Optional[float]:
+    """A written cell's number (499, 499.0, '499', '₹ 499'); None when it holds no number."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    m = re.fullmatch(r"\s*(?:₹|rs\.?|inr)?\s*(-?\d+(?:\.\d+)?)\s*", str(value or ""), flags=re.IGNORECASE)
+    return float(m.group(1)) if m else None
+
+
 def _fmt_num(x: float) -> str:
     return str(int(x)) if float(x).is_integer() else str(x)
 
@@ -111,145 +156,188 @@ def _dimension_option(size_text: Optional[str], variation: Optional[str], option
 class MeeshoAdapter:
     """Adapter and dynamic engine for Meesho Supplier Panel catalog generation."""
 
-    _cached_registry: Optional[Dict[str, Dict[str, Any]]] = None
+    _cached_index: Optional[Dict[str, Any]] = None
+    _loaded_templates: Dict[str, Dict[str, Any]] = {}
     _cached_categories: Optional[List[Dict[str, str]]] = None
 
     @classmethod
     def get_templates_dir(cls) -> Path:
-        """Returns the active templates directory containing official Meesho .xlsx templates."""
-        if PRIMARY_TEMPLATES_DIR.exists():
-            return PRIMARY_TEMPLATES_DIR
-        elif SECONDARY_TEMPLATES_DIR.exists():
-            return SECONDARY_TEMPLATES_DIR
-        return PRIMARY_TEMPLATES_DIR
+        """The folder holding the official Meesho .xlsx templates, one sub-folder per category path."""
+        return TEMPLATES_DIR
 
     @classmethod
-    def scan_available_templates(cls, force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
+    def template_index(cls, force_refresh: bool = False) -> Dict[str, Any]:
         """
-        Agnostically scans the templates directory for any number of official Meesho .xlsx files.
-        Extracts category names, active data sheet ('<Category>-Fill this'), hierarchy, and columns.
+        Every official template, found from its folder: '<dir>/Home & Kitchen/.../Bedsheets/Bedsheets-12776-...xlsx'
+        is the template for that category, with Meesho's template id 12776. No workbook is opened
+        here (there are thousands); _load_template reads the one an export uses.
+        Each entry carries the category's real names from meeshoCategories.json as `segments` and
+        `breadcrumb` ('Home & Kitchen > ... > Bedsheets'): 39 names contain '/', which their folders
+        couldn't keep ('Memory / RAM' is saved as 'Memory RAM').
+        Returns {"entries", "by_id", "by_breadcrumb", "by_segments", "by_path" (folder path),
+        "by_key" (normalized leaf name -> [entries])}.
         """
-        if cls._cached_registry is not None and not force_refresh:
-            return cls._cached_registry
+        if cls._cached_index is not None and not force_refresh:
+            return cls._cached_index
 
-        registry = {}
+        entries: List[Dict[str, Any]] = []
         tmpl_dir = cls.get_templates_dir()
-        if not tmpl_dir.exists():
-            cls._cached_registry = registry
-            return registry
+        for fpath in (sorted(tmpl_dir.rglob("*.xlsx")) if tmpl_dir.exists() else []):
+            if fpath.name.startswith("~$"):  # Excel's lock file while a template is open
+                continue
+            rel_dir = fpath.parent.relative_to(tmpl_dir).as_posix()
+            tmpl_id = re.search(r"-(\d+)-EXTERNAL", fpath.name)
+            if rel_dir == "." or not tmpl_id:
+                print(f"[MeeshoAdapter] Notice: {fpath.name} is not a category template (no category folder or id); ignored")
+                continue
+            entries.append({"id": tmpl_id.group(1), "path": rel_dir, "filename": fpath.name, "filepath": str(fpath)})
 
-        xlsx_files = sorted(glob.glob(str(tmpl_dir / "*.xlsx")))
-        for fpath in xlsx_files:
-            fname = os.path.basename(fpath)
-            try:
-                # Load with openpyxl in read-only / metadata inspection mode
-                wb = openpyxl.load_workbook(fpath, data_only=True)
-                fill_sheet = next((s for s in wb.sheetnames if "-Fill this" in s), None)
-                if not fill_sheet and len(wb.sheetnames) > 1:
-                    fill_sheet = wb.sheetnames[1]
+        # Real names: the exact folder path first for every leaf, then the same names with symbols
+        # ignored, so a loose match never takes a folder that another leaf names exactly
+        def loose(segments: List[str]) -> Tuple[str, ...]:
+            return tuple(re.sub(r"[^a-z0-9]", "", s.lower()) for s in segments)
 
-                if not fill_sheet:
-                    continue
+        by_path = {e["path"].lower(): e for e in entries}
+        by_loose: Dict[Tuple[str, ...], List[Dict[str, Any]]] = {}
+        for e in entries:
+            by_loose.setdefault(loose(e["path"].split("/")), []).append(e)
+        unpaired = []
+        for leaf in cls.load_category_taxonomy():
+            e = by_path.get("/".join(leaf["segments"]).lower())
+            if e is not None and "segments" not in e:
+                e["segments"] = leaf["segments"]
+            else:
+                unpaired.append(leaf)
+        for leaf in unpaired:
+            fits = [e for e in by_loose.get(loose(leaf["segments"]), []) if "segments" not in e]
+            if len(fits) == 1:
+                fits[0]["segments"] = leaf["segments"]
 
-                sh = wb[fill_sheet]
-                cat_raw = fill_sheet.replace("-Fill this", "").strip()
-                cat_norm = cls._normalize_cat_key(cat_raw)
-                hierarchy = str(sh.cell(1, 1).value or "")
+        by_key: Dict[str, List[Dict[str, Any]]] = {}
+        for e in entries:
+            e.setdefault("segments", e["path"].split("/"))  # a template the taxonomy file doesn't list
+            e["category"] = e["segments"][-1]
+            e["normalized_category"] = cls._normalize_cat_key(e["category"])
+            e["breadcrumb"] = BREADCRUMB_SEP.join(e["segments"])
+            by_key.setdefault(e["normalized_category"], []).append(e)
+        cls._cached_index = {
+            "entries": entries,
+            "by_id": {e["id"]: e for e in entries},
+            "by_breadcrumb": {cls._breadcrumb_key(e["segments"]): e for e in entries},
+            "by_segments": {tuple(e["segments"]): e for e in entries},
+            "by_path": by_path,
+            "by_key": by_key,
+        }
+        cls._loaded_templates = {}
+        return cls._cached_index
 
-                # Extract column definitions from Row 3 and field types from Row 2
-                col_map = {}
-                compulsory_cols = set()
-                for col_idx in range(1, sh.max_column + 1):
-                    r2_val = str(sh.cell(2, col_idx).value or "").strip()
-                    if "* Compulsory" in r2_val or "Compulsory" in r2_val:
-                        compulsory_cols.add(col_idx)
-                    r3_val = str(sh.cell(3, col_idx).value or "").strip()
-                    col_title = r3_val.split("\n")[0].strip() if r3_val else f"Col_{col_idx}"
-                    col_map[col_idx] = col_title
+    @classmethod
+    def _breadcrumb_key(cls, segments: List[str]) -> str:
+        return BREADCRUMB_SEP.join(s.strip().lower() for s in segments)
 
-                # Extract dropdown options from Validation Sheet (Row 3 downwards)
-                dropdowns = {}
-                if "Validation Sheet" in wb.sheetnames:
-                    ws_val = wb["Validation Sheet"]
-                    for col_idx in range(1, min(sh.max_column + 1, ws_val.max_column + 1)):
-                        opts = []
-                        for r in range(3, ws_val.max_row + 1):
-                            v = ws_val.cell(r, col_idx).value
-                            if v is not None and str(v).strip():
-                                opts.append(str(v).strip())
-                        if opts:
-                            dropdowns[col_idx] = opts
+    @classmethod
+    def template_by_ref(cls, ref: Any) -> Optional[Dict[str, Any]]:
+        """
+        The template a stored Meesho category means: Meesho's template id ('12776'), a breadcrumb
+        ('Home & Kitchen > Home Furnishings > Bedding & Linen > Bedsheets') or a template folder path.
+        Exact matches only; None for anything else.
+        """
+        value = str(ref or "").strip()
+        if not value:
+            return None
+        index = cls.template_index()
+        if value.isdigit():
+            return index["by_id"].get(value)
+        if ">" in value:
+            return index["by_breadcrumb"].get(cls._breadcrumb_key(value.split(">")))
+        return index["by_path"].get(value.strip("/").lower())
 
-                template_info = {
-                    "category": cat_raw,
-                    "normalized_category": cat_norm,
-                    "filename": fname,
-                    "filepath": fpath,
-                    "sheet_name": fill_sheet,
-                    "all_sheets": wb.sheetnames,
-                    "hierarchy": hierarchy,
-                    "total_columns": sh.max_column,
-                    "columns": col_map,
-                    "compulsory_columns": list(compulsory_cols),
-                    "dropdowns": dropdowns,
-                }
+    @classmethod
+    def _load_template(cls, entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Reads one template's layout: active data sheet ('<Category>-Fill this'), hierarchy, columns
+        from Row 3, compulsory markers from Row 2 and dropdown options from the Validation Sheet.
+        """
+        fpath = entry["filepath"]
+        if fpath in cls._loaded_templates:
+            return cls._loaded_templates[fpath]
+        try:
+            wb = openpyxl.load_workbook(fpath, data_only=True)
+        except Exception as e:
+            print(f"[MeeshoAdapter] Notice: Could not read template {entry['filename']}: {e}")
+            return None
+        fill_sheet = next((s for s in wb.sheetnames if "-Fill this" in s), None)
+        if not fill_sheet and len(wb.sheetnames) > 1:
+            fill_sheet = wb.sheetnames[1]
+        if not fill_sheet:
+            print(f"[MeeshoAdapter] Notice: Template {entry['filename']} has no data sheet")
+            return None
 
-                registry[cat_norm] = template_info
-                # Also store by exact category name
-                registry[cat_raw.lower()] = template_info
+        sh = wb[fill_sheet]
+        col_map = {}
+        compulsory_cols = set()
+        for col_idx in range(1, sh.max_column + 1):
+            r2_val = str(sh.cell(2, col_idx).value or "").strip()
+            if "* Compulsory" in r2_val or "Compulsory" in r2_val:
+                compulsory_cols.add(col_idx)
+            r3_val = str(sh.cell(3, col_idx).value or "").strip()
+            col_map[col_idx] = r3_val.split("\n")[0].strip() if r3_val else f"Col_{col_idx}"
 
-            except Exception as e:
-                print(f"[MeeshoAdapter] Notice: Could not index template {fname}: {e}")
+        dropdowns = {}
+        if "Validation Sheet" in wb.sheetnames:
+            ws_val = wb["Validation Sheet"]
+            for col_idx in range(1, min(sh.max_column + 1, ws_val.max_column + 1)):
+                opts = []
+                for r in range(3, ws_val.max_row + 1):
+                    v = ws_val.cell(r, col_idx).value
+                    if v is not None and str(v).strip():
+                        opts.append(str(v).strip())
+                if opts:
+                    dropdowns[col_idx] = opts
 
-        cls._cached_registry = registry
-        return registry
+        template_info = {
+            **entry,
+            "sheet_name": fill_sheet,
+            "all_sheets": wb.sheetnames,
+            "hierarchy": str(sh.cell(1, 1).value or ""),
+            "total_columns": sh.max_column,
+            "columns": col_map,
+            "compulsory_columns": list(compulsory_cols),
+            "dropdowns": dropdowns,
+        }
+        cls._loaded_templates[fpath] = template_info
+        return template_info
 
     @classmethod
     def get_available_templates(cls) -> List[Dict[str, Any]]:
-        """Returns clean list of registered template descriptors for frontend/API."""
-        reg = cls.scan_available_templates()
-        seen = set()
-        out = []
-        for v in reg.values():
-            if v["filename"] not in seen:
-                seen.add(v["filename"])
-                out.append({
-                    "category": v["category"],
-                    "filename": v["filename"],
-                    "sheet_name": v["sheet_name"],
-                    "total_columns": v["total_columns"],
-                    "hierarchy": v["hierarchy"],
-                    "dropdown_columns_count": len(v.get("dropdowns", {})),
-                    "filepath": v["filepath"],
-                    "columns": v["columns"],
-                    "compulsory_columns": v["compulsory_columns"],
-                    "dropdowns": v["dropdowns"],
-                })
-        return out
+        """Every official template found, without opening them: id, category, breadcrumb and file."""
+        return [
+            {"id": e["id"], "category": e["category"], "breadcrumb": e["breadcrumb"], "filename": e["filename"]}
+            for e in cls.template_index()["entries"]
+        ]
 
     @classmethod
-    def load_category_taxonomy(cls) -> List[Dict[str, str]]:
-        """Loads and flattens all leaf categories from meeshoCategories.json."""
+    def load_category_taxonomy(cls) -> List[Dict[str, Any]]:
+        """All leaf categories of meeshoCategories.json, in the file's order: name, path and segments."""
         if cls._cached_categories is not None:
             return cls._cached_categories
 
-        leafs: List[Dict[str, str]] = []
+        leafs: List[Dict[str, Any]] = []
         if MEESHO_CATEGORIES_FILE.exists():
             try:
                 with open(MEESHO_CATEGORIES_FILE, "r", encoding="utf-8") as f:
                     tree = json.load(f)
 
-                def walk(nodes: List[Dict[str, Any]], current_path: str):
+                def walk(nodes: List[Dict[str, Any]], segments: List[str]):
                     for node in nodes:
-                        name = node.get("name", "").strip()
-                        p = f"{current_path}/{name}" if current_path else name
+                        here = segments + [node.get("name", "").strip()]
                         children = node.get("children", [])
                         if not children:
-                            leafs.append({"name": name, "path": p})
+                            leafs.append({"name": here[-1], "path": "/".join(here), "segments": here})
                         else:
-                            walk(children, p)
+                            walk(children, here)
 
-                walk(tree, "")
+                walk(tree, [])
             except Exception as e:
                 print(f"[MeeshoAdapter] Warning: Could not parse meeshoCategories.json: {e}")
 
@@ -257,20 +345,46 @@ class MeeshoAdapter:
         return leafs
 
     @classmethod
+    def taxonomy_tree(cls) -> List[Dict[str, Any]]:
+        """
+        The category tree as the supplier panel shows it, four levels deep, for the category picker.
+        Leaves are {"name", "id"} with Meesho's template id; leaves without a template are left out.
+        """
+        by_segments = cls.template_index()["by_segments"]
+        roots: List[Dict[str, Any]] = []
+        for leaf in cls.load_category_taxonomy():
+            entry = by_segments.get(tuple(leaf["segments"]))
+            if not entry:
+                continue
+            level = roots
+            for name in leaf["segments"][:-1]:
+                node = next((n for n in level if n["name"] == name and "children" in n), None)
+                if node is None:
+                    node = {"name": name, "children": []}
+                    level.append(node)
+                level = node["children"]
+            level.append({"name": leaf["segments"][-1], "id": entry["id"]})
+        return roots
+
+    @classmethod
     def get_categories(cls, search: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
         """
-        Searches the 3,787 official Meesho leaf categories, annotating each with template availability.
+        Searches the official Meesho leaf categories by name or breadcrumb, each with its template.
         """
-        all_leafs = cls.load_category_taxonomy()
         q = (search or "").strip().lower()
+        by_segments = cls.template_index()["by_segments"]
 
         results = []
-        for item in all_leafs:
-            if not q or q in item["name"].lower() or q in item["path"].lower():
-                tmpl = cls.find_template(item["name"]) or cls.find_template(item["path"])
+        for item in cls.load_category_taxonomy():
+            breadcrumb = BREADCRUMB_SEP.join(item["segments"])
+            if not q or q in breadcrumb.lower() or q in item["path"].lower():
+                # By full path only: several leaves share a name ("Bedsheets" under Home & Kitchen and Kids & Toys)
+                tmpl = by_segments.get(tuple(item["segments"]))
                 results.append({
                     "name": item["name"],
-                    "path": item["path"],
+                    "path": breadcrumb,
+                    "breadcrumb": breadcrumb,
+                    "id": tmpl["id"] if tmpl else None,
                     "template_available": tmpl is not None,
                     "template_filename": tmpl["filename"] if tmpl else None,
                     "template_category": tmpl["category"] if tmpl else None,
@@ -281,56 +395,110 @@ class MeeshoAdapter:
         return results
 
     @classmethod
-    def find_template(cls, category_name: Optional[str]) -> Optional[Dict[str, Any]]:
+    def template_candidates(cls, category_name: Optional[str]) -> List[Dict[str, Any]]:
         """
-        Matches an item's category name against registered templates using:
-          1. Exact (normalized) match
-          2. A taxonomy path equal to the template's own path
-          3. The category's head noun ("Double Bedsheets" -> Bedsheets, "Brother & Sister T-Shirts" -> Tshirts)
+        Templates (index entries) a category name can mean, from the first rule that matches:
+          1. A template id, breadcrumb or folder path (template_by_ref)
+          2. The leaf name, normalized ('Bed Sheets' -> Bedsheets)
+          3. The category's head noun ("Double Bedsheets" -> Bedsheets, "Brother & Sister T-Shirts" -> Tshirts),
+             longest first so 'tshirts' wins over 'shirts'
           4. Head-noun synonyms ("Tees" -> Tshirts)
-        Whole words only: "Steel bottles", "Settees" and "Sweatshirts" match no template.
+        Whole words only: "Steel bottles" and "Sweatshirts" don't match Bottles' or Shirts' templates.
+        Used for suggestions; the export never picks a template by name (resolve_item_template).
         """
-        if not category_name:
-            return None
+        if not category_name or not category_name.strip():
+            return []
+        hit = cls.template_by_ref(category_name)
+        if hit:
+            return [hit]
+        by_key = cls.template_index()["by_key"]
+        name = category_name.strip()
+        if ">" in name:
+            name = name.rsplit(">", 1)[-1]
+        elif "/" in name:
+            name = name.rsplit("/", 1)[-1]
 
-        reg = cls.scan_available_templates()
-        norm_key = cls._normalize_cat_key(category_name)
+        key = cls._normalize_cat_key(name)
+        if key in by_key:
+            return by_key[key]
 
-        # 1. Direct normalized match
-        if norm_key in reg:
-            return reg[norm_key]
+        heads = [k for k in cls._head_keys(name) if k in by_key]
+        if heads:
+            longest = max(len(k) for k in heads)
+            return [e for k in heads if len(k) == longest for e in by_key[k]]
 
-        # 2. A full taxonomy path (e.g. from meeshoCategories.json), compared with the template's own path
-        if "/" in category_name:
-            path = category_name.strip().lower()
-            for tmpl in reg.values():
-                m = re.search(r"\(([^)]*)\)", tmpl.get("hierarchy") or "")
-                if m and m.group(1).strip().lower() == path:
-                    return tmpl
-            category_name = category_name.rsplit("/", 1)[-1]
-            norm_key = cls._normalize_cat_key(category_name)
-            if norm_key in reg:
-                return reg[norm_key]
-
-        # 3. Head noun of each part, longest template first so 'tshirts' wins over 'shirts'
-        heads = cls._head_keys(category_name)
-        sorted_tmpls = sorted(
-            reg.values(),
-            key=lambda t: len(t.get("normalized_category", "")),
-            reverse=True
-        )
-        for tmpl in sorted_tmpls:
-            if tmpl["normalized_category"] in heads:
-                return tmpl
-
-        # 4. Head-noun synonyms (normalized head -> template key). Not 'bedding' or 'duvet': pet
-        # bedding or a duvet in the Bedsheets template fails Meesho QC, like footwear in Sneakers
-        synonyms = {"tee": "tshirts"}
+        # Not 'bedding' or 'duvet': pet bedding or a duvet in the Bedsheets template fails Meesho QC
+        synonyms = {"tee": "tshirt"}
+        all_heads = cls._head_keys(name)
         for syn, target in synonyms.items():
-            if syn in heads and target in reg:
-                return reg[target]
+            if syn in all_heads and target in by_key:
+                return by_key[target]
+        return []
 
+    @classmethod
+    def find_template(cls, category_name: Optional[str]) -> Optional[Dict[str, Any]]:
+        """The one template a category reference or name means, loaded; None when it means none or several."""
+        candidates = cls.template_candidates(category_name)
+        return cls._load_template(candidates[0]) if len(candidates) == 1 else None
+
+    @classmethod
+    def meesho_choice(cls, item: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
+        """
+        (value, source) of the seller's Meesho category for one product: the product's own
+        'Meesho Category' (source "product"), else the default set for its category in Settings
+        (source "category"), else (None, None).
+        """
+        own = _attr(cls._row_inputs(item)["attrs"], MEESHO_CATEGORY_ATTR)
+        if own:
+            return own, "product"
+        category = cls._item_category(item).strip().lower()
+        defaults = {k.strip().lower(): v for k, v in SettingsService.get_meesho_category_defaults().items()}
+        if defaults.get(category):
+            return defaults[category], "category"
+        return None, None
+
+    @classmethod
+    def resolve_item_template(cls, item: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        (template, suggestions) for one product. The template comes only from the seller's choice
+        (meesho_choice); a name match is never used to pick one. Without a usable choice the template
+        is None and `suggestions` are the templates the product's category name could mean.
+        """
+        choice, _ = cls.meesho_choice(item)
+        entry = cls.template_by_ref(choice) if choice else None
+        if entry:
+            loaded = cls._load_template(entry)
+            return loaded, [entry]
+        return None, cls.suggest_templates(item)
+
+    @classmethod
+    def suggest_templates(cls, item: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Templates the product's category name could mean, without those for another audience than
+        its name states: "Women's straight kurta" isn't offered Men Fashion's Kurtas.
+        """
+        candidates = cls.template_candidates(cls._item_category(item))
+        named = cls._named_audiences(cls._row_inputs(item)["name"])
+        if not named:
+            return candidates
+        return [c for c in candidates if cls._audience(c["segments"][0]) in (None, *named)]
+
+    @classmethod
+    def _audience(cls, section: str) -> Optional[str]:
+        """'men', 'women' or 'kids' for a top-level Meesho section that serves one audience."""
+        for audience, sections in AUDIENCE_SECTIONS.items():
+            if section.strip().lower() in sections:
+                return audience
         return None
+
+    @classmethod
+    def _named_audiences(cls, text: str) -> set:
+        """Audiences a product name states: "Women's flared kurta" -> {'women'}."""
+        return {a for a, pattern in AUDIENCE_WORDS.items() if re.search(pattern, text or "", flags=re.IGNORECASE)}
+
+    @classmethod
+    def _item_category(cls, item: Dict[str, Any]) -> str:
+        return getattr(item.get("product"), "category", None) or item.get("category") or "General"
 
     @classmethod
     def _head_keys(cls, name: str) -> set:
@@ -431,7 +599,8 @@ class MeeshoAdapter:
             return draft.get(key) if isinstance(draft, dict) else getattr(draft, key, None)
 
         name = pick("name") or ""
-        title = re.sub(r"<[^>]+>", "", draft_field("title") or name).strip()[:95]
+        # Never shortened here: a title over Meesho's limit blocks the export (_upload_rule_problems)
+        title = re.sub(r"<[^>]+>", "", draft_field("title") or name).strip()
 
         bullets = [re.sub(r"<[^>]+>", "", str(b)).strip() for b in (draft_field("bullets") or [])]
         desc = re.sub(r"<[^>]+>", "", draft_field("description") or "").strip()
@@ -456,6 +625,9 @@ class MeeshoAdapter:
             "images": pick("images") or [],
             "description": full_desc,
             "style_id": pick("style_id") or _attr(attrs, "Style Code", "Style ID") or pick("sku") or "",
+            "has_draft": bool(draft),
+            "approved": bool(draft_field("is_approved")),
+            "draft_text": {"title": title, "description": desc, "bullets": bullets},
         }
 
     @classmethod
@@ -558,6 +730,64 @@ class MeeshoAdapter:
         return None
 
     @classmethod
+    def _upload_rule_problems(cls, row: Dict[str, Any], written: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Meesho's rules beyond the template's compulsory markers, all blocking: an approved Meesho draft,
+        a Product Name within 100 characters without weight, dimensions, price or another marketplace's
+        name, no word Meesho's QC flags, Meesho Price below MRP, a Wrong/Defective discount below the
+        Meesho Price, and image links Meesho can use (made by its own uploader, never stock or local files).
+        """
+        problems = []
+
+        def add(field: str, reason: str):
+            problems.append({"sku": row["sku"], "field": field, "reason": reason, "blocking": True})
+
+        if not row["has_draft"]:
+            add("Meesho Draft", "no Meesho copy yet; generate it and approve it")
+        elif not row["approved"]:
+            add("Meesho Draft", "the Meesho draft isn't approved; review and approve it")
+
+        name = row["title"]
+        if len(name) > MEESHO_TITLE_LIMIT:
+            add("Product Name", f"{len(name)} characters; Meesho allows {MEESHO_TITLE_LIMIT}. Shorten the draft title")
+        for what, pattern in PRODUCT_NAME_RULES:
+            m = re.search(pattern, name, flags=re.IGNORECASE)
+            if m:
+                add("Product Name", f"contains {what} ('{m.group(0).strip()}'), which Meesho doesn't allow in Product Name")
+                break
+
+        text = row.get("draft_text") or {}
+        for field, value in (("Product Name", text.get("title")),
+                             ("Product Description", " ".join([text.get("description") or "", *(text.get("bullets") or [])]))):
+            flagged = [w for w in MEESHO_FLAGGED_WORDS if re.search(rf"\b{w}\b", value or "", flags=re.IGNORECASE)]
+            if flagged:
+                add(field, f"uses {', '.join(repr(w) for w in flagged)}, which Meesho's QC flags; edit the draft")
+
+        price = _number(written.get("Meesho Price"))
+        mrp = _number(written.get("MRP"))
+        if price is not None and mrp is not None and price >= mrp:
+            add("Meesho Price", f"₹{_fmt_num(price)} must be lower than the MRP (₹{_fmt_num(mrp)})")
+        discount_col = next((k for k in written if "wrong/defective" in k.lower()), None)
+        discount_raw = written.get(discount_col) if discount_col else None
+        if discount_raw is not None and str(discount_raw).strip():
+            discount = _number(discount_raw)
+            if discount is None or discount < 0:
+                add(discount_col, f"'{discount_raw}' is not an amount in ₹")
+            elif price is not None and discount >= price:
+                add(discount_col, f"₹{_fmt_num(discount)} discount must be below the Meesho Price (₹{_fmt_num(price)})")
+
+        for col, value in written.items():
+            if not col.lower().startswith("image") or value is None or not str(value).strip():
+                continue
+            link = str(value).strip()
+            bad = next((label for label, pattern in UNUSABLE_IMAGE_LINKS if re.search(pattern, link, flags=re.IGNORECASE)), None)
+            if not re.match(r"https?://", link, flags=re.IGNORECASE):
+                add(col, f"'{link[:60]}' is not a web link; use the link Meesho's Images Bulk Upload gives")
+            elif bad:
+                add(col, f"{bad} link ({link[:60]}); Meesho needs the link its Images Bulk Upload gives for this photo")
+        return problems
+
+    @classmethod
     def _duplicate_name_problems(cls, name_rows: Dict[str, List[Dict[str, Any]]], category: str) -> List[Dict[str, Any]]:
         """
         Meesho treats rows sharing a Product Name as sizes of one product, then rejects them when
@@ -591,8 +821,9 @@ class MeeshoAdapter:
         Reads column mapping dynamically from Row 3 to adapt to ANY official template.
         Preserves all other sheets (Instructions, Example Sheet, Validation Sheet, Return Reasons).
         """
-        if "filepath" not in template_info or "columns" not in template_info:
-            full_tmpl = cls.find_template(template_info.get("category"))
+        if "columns" not in template_info:
+            full_tmpl = (cls._load_template(template_info) if "filepath" in template_info
+                         else cls.find_template(template_info.get("category")))
             if full_tmpl:
                 template_info = full_tmpl
             else:
@@ -665,6 +896,7 @@ class MeeshoAdapter:
 
                 cell.value = val
                 written[col_name] = val
+            problems.extend({**pr, "category": category} for pr in cls._upload_rule_problems(row, written))
             ws.row_dimensions[target_row].height = 22
             name_rows.setdefault(row["title"].lower(), []).append(row)
 
@@ -683,14 +915,15 @@ class MeeshoAdapter:
         products_with_drafts: List[Dict[str, Any]],
         category_filter: Optional[str] = None,
         force_zip: bool = False
-    ) -> Tuple[io.BytesIO, str, str, List[Dict[str, Any]]]:
+    ) -> Tuple[io.BytesIO, str, str]:
         """
-        Groups items by category and fills each category's official template.
-          - One category: returns (xlsx_buf, xlsx media type, filename, skipped)
-          - Several categories: returns a zip with one .xlsx per category
-        Items whose category has no official template are left out and listed in `skipped`
-        (the caller must tell the seller); when nothing is left to export, that is an error.
-        force_zip zips even a single category's file (the dashboard's "Full Catalog (ZIP)"); several are always zipped.
+        All or nothing: fills each product's official template (resolve_item_template) only when
+        every product given passes every check; otherwise raises MeeshoExportIncomplete listing all
+        problems, and no file is made. The seller takes a product out of the upload instead of
+        having it left out quietly.
+          - One template: returns (xlsx_buf, xlsx media type, filename)
+          - Several templates: returns a zip with one .xlsx per template
+        force_zip zips even a single template's file (the dashboard's "Full Catalog (ZIP)"); several are always zipped.
         """
         # If category filter provided, restrict items
         if category_filter and category_filter != "All":
@@ -704,42 +937,29 @@ class MeeshoAdapter:
         if not products_with_drafts:
             raise ValueError(f"No products in category '{category_filter}' to export.")
 
-        # Group items by category
-        grouped: Dict[str, List[Dict[str, Any]]] = {}
-        for item in products_with_drafts:
-            product = item.get("product")
-            cat = (
-                (category_filter if category_filter != "All" else None)
-                or getattr(product, "category", None)
-                or item.get("category")
-                or "General"
-            )
-            grouped.setdefault(cat, []).append(item)
-
+        groups, unplaced = cls._group_by_template(products_with_drafts)
         generated_files: List[Tuple[str, io.BytesIO]] = []
-        problems: List[Dict[str, Any]] = []
-        skipped: List[Dict[str, Any]] = []
+        problems: List[Dict[str, Any]] = list(unplaced)
+        leaf_counts: Dict[str, int] = {}
+        for tmpl, _ in groups.values():
+            leaf_counts[tmpl["category"]] = leaf_counts.get(tmpl["category"], 0) + 1
 
-        for cat_name, cat_items in grouped.items():
-            tmpl = cls.find_template(cat_name)
-            if not tmpl:
-                skipped.extend(cls._missing_template_problems(cat_name, cat_items, blocking=False))
-                continue
+        for tmpl, tmpl_items in groups.values():
             try:
-                buf = cls.populate_template(tmpl, cat_items)
+                buf = cls.populate_template(tmpl, tmpl_items)
             except MeeshoExportIncomplete as e:
-                # Keep going so one response lists every category's problems
+                # Keep going so one response lists every template's problems
                 problems.extend(e.problems)
                 continue
 
-            safe_cat = re.sub(r"[^a-zA-Z0-9_-]", "_", cat_name)
-            file_name = f"ListingPilot_Meesho_{safe_cat}.xlsx"
-            generated_files.append((file_name, buf))
+            safe_cat = re.sub(r"[^a-zA-Z0-9_-]", "_", tmpl["category"])
+            if leaf_counts[tmpl["category"]] > 1:
+                # Men's and Women's Tshirts in one batch: the template's own id tells the files apart
+                safe_cat += f"_{tmpl['id']}"
+            generated_files.append((f"ListingPilot_Meesho_{safe_cat}.xlsx", buf))
 
-        if problems:
-            raise MeeshoExportIncomplete(problems + skipped)
-        if not generated_files:
-            raise MeeshoExportIncomplete([{**p, "blocking": True} for p in skipped])
+        if any(p["blocking"] for p in problems):
+            raise MeeshoExportIncomplete(problems)
 
         # One category: the .xlsx itself unless a zip was asked for; several: always a zip, so no file is dropped
         if len(generated_files) == 1 and not force_zip:
@@ -748,7 +968,6 @@ class MeeshoAdapter:
                 buf,
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 file_name,
-                skipped,
             )
 
         zip_buf = io.BytesIO()
@@ -762,8 +981,26 @@ class MeeshoAdapter:
             zip_buf,
             "application/zip",
             f"ListingPilot_Meesho_Batch_{date_stamp}.zip",
-            skipped,
         )
+
+    @classmethod
+    def check_items(cls, products_with_drafts: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        {sku: blocking problems} for an upload, by the export's own checks, without making a file.
+        Checked together, so two selected products sharing a Product Name are both reported.
+        """
+        groups, unplaced = cls._group_by_template(products_with_drafts)
+        problems: List[Dict[str, Any]] = list(unplaced)
+        for tmpl, tmpl_items in groups.values():
+            try:
+                cls.populate_template(tmpl, tmpl_items)
+            except MeeshoExportIncomplete as e:
+                problems.extend(e.problems)
+        by_sku: Dict[str, List[Dict[str, Any]]] = {cls._row_inputs(i)["sku"]: [] for i in products_with_drafts}
+        for p in problems:
+            if p["blocking"]:
+                by_sku.setdefault(p["sku"], []).append(p)
+        return by_sku
 
     @classmethod
     def build_fill_in_sheet(cls, products_with_drafts: List[Dict[str, Any]]) -> Optional[io.BytesIO]:
@@ -772,29 +1009,26 @@ class MeeshoAdapter:
         import (column headers are the template's own names, which the export reads back as attributes).
         Returns None when every product would export cleanly.
         """
-        problems: List[Dict[str, Any]] = []
         options: Dict[str, List[str]] = {}
         field_order: List[str] = []
         attr_names: Dict[str, str] = {}
-        for cat_name, cat_items in cls._group_by_category(products_with_drafts).items():
-            tmpl = cls.find_template(cat_name)
-            if tmpl:
-                for col_idx, col_name in tmpl["columns"].items():
-                    if col_name not in field_order:
-                        field_order.append(col_name)
-                    attr_names.setdefault(col_name, cls._seller_attribute(cat_name, col_name))
-                    if col_idx in tmpl.get("dropdowns", {}):
-                        options.setdefault(col_name, tmpl["dropdowns"][col_idx])
-            if not tmpl:
-                # Skipped by the export, so nothing to fill; still listed under "What's wrong"
-                problems.extend(cls._missing_template_problems(cat_name, cat_items, blocking=False))
-                continue
+        groups, template_problems = cls._group_by_template(products_with_drafts)
+        # Products without a Meesho category block the export: listed under "What's wrong", and asked
+        # for their Meesho Category so the next export can place them
+        problems: List[Dict[str, Any]] = list(template_problems)
+        for tmpl, tmpl_items in groups.values():
+            for col_idx, col_name in tmpl["columns"].items():
+                if col_name not in field_order:
+                    field_order.append(col_name)
+                attr_names.setdefault(col_name, cls._seller_attribute(tmpl["category"], col_name))
+                if col_idx in tmpl.get("dropdowns", {}):
+                    options.setdefault(col_name, tmpl["dropdowns"][col_idx])
             try:
-                cls.populate_template(tmpl, cat_items)
+                cls.populate_template(tmpl, tmpl_items)
             except MeeshoExportIncomplete as e:
                 problems.extend(e.problems)
         blocking = [p for p in problems if p["blocking"]]
-        if not blocking:
+        if not blocking and not template_problems:
             return None
 
         image_fields = ["Image 1 (Front)", "Image 2", "Image 3", "Image 4"]
@@ -802,6 +1036,11 @@ class MeeshoAdapter:
         # Settings, not by filling a cell per SKU
         fields = [f for f in field_order if any(p["field"] == f for p in blocking)
                   and f != "Product Name" and not f.lower().startswith("image") and f not in SELLER_DETAIL_FIELDS]
+        if template_problems:
+            fields.insert(0, MEESHO_CATEGORY_ATTR)
+            attr_names[MEESHO_CATEGORY_ATTR] = MEESHO_CATEGORY_ATTR
+            options[MEESHO_CATEGORY_ATTR] = sorted(e["breadcrumb"] for e in cls.template_index()["entries"])
+            blocking = blocking + [{**p, "field": MEESHO_CATEGORY_ATTR} for p in template_problems]
 
         wb = openpyxl.Workbook()
         ws = wb.active
@@ -868,9 +1107,8 @@ class MeeshoAdapter:
         return buf
 
     @classmethod
-    def seller_fields(cls, category: Optional[str]) -> Dict[str, Dict[str, Any]]:
-        """{attribute name: {"field": template column, "options": [...]}} for every column of the category's template."""
-        tmpl = cls.find_template(category)
+    def seller_fields(cls, tmpl: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """{attribute name: {"field": template column, "options": [...]}} for every column of a loaded template."""
         if not tmpl:
             return {}
         dropdowns = tmpl.get("dropdowns", {})
@@ -887,18 +1125,27 @@ class MeeshoAdapter:
         template's exact options); `seller` are seller details missing from Settings; `other` are
         blockers a value can't fix (images, Product Name).
         """
-        product = item.get("product")
-        category = getattr(product, "category", None) or item.get("category")
-        tmpl = cls.find_template(category)
+        category = cls._item_category(item)
+        tmpl, suggestions = cls.resolve_item_template(item)
+        _, source = cls.meesho_choice(item)
+        meesho_category = {
+            "id": tmpl["id"] if tmpl else None,
+            "breadcrumb": tmpl["breadcrumb"] if tmpl else None,
+            "source": source if tmpl else None,  # "product" or "category" (the category's default)
+            # Templates the product's category name could mean; the seller still picks one
+            "suggestions": [] if tmpl else [{"id": s["id"], "breadcrumb": s["breadcrumb"]} for s in suggestions],
+        }
         if not tmpl:
-            return {"category": category, "template": None, "fields": [], "seller": [], "other": []}
+            return {"category": category, "template": None, "meesho_category": meesho_category,
+                    "fields": [], "seller": [],
+                    "other": [{"field": "Template", "reason": cls._template_problem(item, suggestions)["reason"]}]}
         try:
             cls.populate_template(tmpl, [item])
             problems: List[Dict[str, Any]] = []
         except MeeshoExportIncomplete as e:
             problems = [p for p in e.problems if p["blocking"]]
 
-        by_field = {spec["field"]: (attr, spec["options"]) for attr, spec in cls.seller_fields(category).items()}
+        by_field = {spec["field"]: (attr, spec["options"]) for attr, spec in cls.seller_fields(tmpl).items()}
         fields, seller, other = [], [], []
         for p in problems:
             name = p["field"]
@@ -910,15 +1157,24 @@ class MeeshoAdapter:
                 continue
             attr, options = by_field[name]
             fields.append({"field": name, "attribute": attr, "options": options, "reason": p["reason"]})
-        return {"category": category, "template": tmpl["filename"], "fields": fields, "seller": seller, "other": other}
+        return {"category": category, "template": tmpl["filename"], "meesho_category": meesho_category,
+                "fields": fields, "seller": seller, "other": other}
 
     @classmethod
-    def _group_by_category(cls, products_with_drafts: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
-        grouped: Dict[str, List[Dict[str, Any]]] = {}
+    def _group_by_template(cls, products_with_drafts: List[Dict[str, Any]]) -> Tuple[Dict[str, Tuple[Dict[str, Any], List[Dict[str, Any]]]], List[Dict[str, Any]]]:
+        """
+        ({template filepath: (template, items)}, problems): each item under the one template it
+        resolves to, and a non-blocking 'Template' problem for each item with none or several.
+        """
+        groups: Dict[str, Tuple[Dict[str, Any], List[Dict[str, Any]]]] = {}
+        problems: List[Dict[str, Any]] = []
         for item in products_with_drafts:
-            cat = getattr(item.get("product"), "category", None) or item.get("category") or "General"
-            grouped.setdefault(cat, []).append(item)
-        return grouped
+            tmpl, candidates = cls.resolve_item_template(item)
+            if tmpl:
+                groups.setdefault(tmpl["filepath"], (tmpl, []))[1].append(item)
+            else:
+                problems.append(cls._template_problem(item, candidates))
+        return groups, problems
 
     @classmethod
     def generate_bulk_upload_file(
@@ -927,17 +1183,33 @@ class MeeshoAdapter:
         products_with_drafts: List[Dict[str, Any]]
     ) -> io.BytesIO:
         """Fills the official template for one category; there is no substitute layout."""
-        tmpl = cls.find_template(category)
-        if not tmpl:
-            raise MeeshoExportIncomplete(cls._missing_template_problems(category, products_with_drafts))
-        return cls.populate_template(tmpl, products_with_drafts)
+        candidates = cls.template_candidates(category)
+        if len(candidates) != 1:
+            raise MeeshoExportIncomplete([
+                {**cls._template_problem({**item, "category": category}, candidates), "blocking": True}
+                for item in products_with_drafts
+            ])
+        return cls.populate_template(cls._load_template(candidates[0]), products_with_drafts)
 
     @classmethod
-    def _missing_template_problems(cls, category: str, items: List[Dict[str, Any]], blocking: bool = True) -> List[Dict[str, Any]]:
-        """Meesho only accepts its own category template, so a category without one can't be exported."""
-        return [{
+    def _template_problem(cls, item: Dict[str, Any], suggestions: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Meesho only accepts its own category template, so a product without a Meesho category the
+        seller chose (it is never guessed) can't be exported until one is picked.
+        """
+        category = cls._item_category(item)
+        choice, source = cls.meesho_choice(item)
+        entry = cls.template_by_ref(choice) if choice else None
+        where = "set on the product" if source == "product" else f"the default for '{category}'"
+        if entry:
+            reason = f"the template file for {entry['breadcrumb']} ({entry['filename']}) couldn't be read"
+        elif choice:
+            reason = f"'{choice}' ({where}) is not an official Meesho category; pick it again"
+        else:
+            reason = f"no Meesho category chosen for this product or for '{category}'; pick it as in the supplier panel"
+            if suggestions:
+                reason += " (suggested: " + "; ".join(s["breadcrumb"] for s in suggestions[:5]) + ")"
+        return {
             "sku": cls._row_inputs(item)["sku"], "category": category, "field": "Template",
-            "reason": f"no official Meesho template for '{category}'; download it from the supplier panel "
-                      f"(Catalog Upload > Bulk) into docs/meesho/templates",
-            "blocking": blocking,
-        } for item in items]
+            "reason": reason, "candidates": [s["breadcrumb"] for s in suggestions], "blocking": True,
+        }
