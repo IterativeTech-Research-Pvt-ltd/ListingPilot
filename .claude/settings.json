@@ -1,0 +1,124 @@
+{
+  "enabledPlugins": {
+    "ponytail@ponytail": true,
+    "pstack@cursor-plugins": true
+  },
+  "extraKnownMarketplaces": {
+    "ponytail": {
+      "source": {
+        "source": "github",
+        "repo": "DietrichGebert/ponytail"
+      }
+    },
+    "cursor-plugins": {
+      "source": {
+        "source": "github",
+        "repo": "cursor/plugins",
+        "sparsePaths": [
+          ".claude-plugin",
+          "harness/pstack"
+        ]
+      }
+    }
+  },
+  "env": {
+    "PONYTAIL_DEFAULT_MODE": "full",
+    "PONYTAIL_SUBAGENT_MATCHER": "^(backend-engineer|frontend-engineer|database-supabase)$"
+  },
+  "skillOverrides": {
+    "using-superpowers": "off",
+    "next-bundle-optimizer": "user-invocable-only",
+    "next-dev-loop": "user-invocable-only",
+    "diagnosing-superpowers": "user-invocable-only",
+    "writing-skills": "user-invocable-only"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(node --test *)",
+      "Bash(node .claude/scripts/sync-skills.mjs*)",
+      "Bash(.venv/Scripts/python.exe -m pytest *)",
+      "Bash(.venv\\Scripts\\python.exe -m pytest *)"
+    ],
+    "ask": [
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(git merge *)",
+      "Bash(git rebase *)",
+      "Bash(git reset *)",
+      "Bash(git clean *)",
+      "Bash(git stash *)",
+      "Bash(git restore *)",
+      "Bash(pnpm add *)",
+      "Bash(pnpm install *)",
+      "Bash(npm install *)",
+      "Bash(npx *)",
+      "Bash(pip install *)",
+      "Bash(alembic *)",
+      "Bash(psql *)",
+      "Bash(supabase *)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.local)",
+      "Read(./frontend/.env)",
+      "Read(./frontend/.env.local)",
+      "Read(./backend/.env)",
+      "Read(./backend/app/data/dynamic_settings.json)",
+      "Edit(./.env)",
+      "Edit(./.env.local)",
+      "Edit(./frontend/.env)",
+      "Edit(./frontend/.env.local)",
+      "Edit(./backend/.env)",
+      "Edit(./backend/app/data/dynamic_settings.json)",
+      "Edit(./docs/meesho/**)",
+      "Edit(./docs/flipkart/templates/**)",
+      "Edit(./.agents/skills/**)",
+      "Edit(./.claude/skills/**)",
+      "Edit(./skills-lock.json)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/scripts/sync-skills.mjs\"",
+            "timeout": 15,
+            "statusMessage": "Syncing project skills..."
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-bash.mjs\"",
+            "timeout": 15,
+            "onFailure": "block"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__claude-in-chrome__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-browser.mjs\"",
+            "timeout": 15,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  }
+}
