@@ -1,6 +1,6 @@
 import json
 import re
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Optional, Dict, Any
@@ -313,7 +313,7 @@ def get_product_draft(
         product = db.query(Product).filter(Product.id == product_id).first()
         if not product:
             raise HTTPException(status_code=404, detail="Product not found")
-        pre_check = RuleEngine.evaluate(product, draft=None)
+        pre_check = RuleEngine.evaluate(product, draft=None, marketplace=marketplace)
         return {
             "id": None,
             "product_id": product_id,
@@ -398,6 +398,7 @@ def approve_draft(
 
     draft.is_approved = True
     draft.status = "approved"
+    draft.rejection_reason = None  # fixed and approved again: an earlier rejection or Meesho QC reason no longer applies
     db.commit()
     db.refresh(draft)
     return draft.to_dict()
@@ -726,8 +727,64 @@ def meesho_readiness(
             "meesho_category": tmpl["breadcrumb"] if tmpl else None,
             "ready": not problems,
             "problems": [{"field": p["field"], "reason": p["reason"]} for p in problems],
+            # Why Meesho's QC failed it last time (from an imported processed file), until it's approved again
+            "qc_reason": (item["draft"] or {}).get("rejection_reason"),
         })
     return {"products": rows, "ready": sum(1 for r in rows if r["ready"]), "total": len(rows)}
+
+
+MAX_PROCESSED_FILE_BYTES = 10 * 1024 * 1024
+
+
+@router.post("/meesho/processed-file", summary="Import a processed (error or warning) file from the supplier panel")
+async def import_meesho_processed_file(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """
+    Reads Meesho's processed file (ERROR STATUS / ERROR MESSAGE per SKU). Each failed product's Meesho draft
+    goes back to unapproved with "Meesho QC: <message>" as its reason, so it can't be exported again until
+    it's fixed and approved; the words Meesho flagged are learned, so new copy and checks avoid them.
+    A file that can't be read changes nothing; SKUs not in the catalogue are reported, never dropped quietly.
+    """
+    if not (file.filename or "").lower().endswith(".xlsx"):
+        raise HTTPException(status_code=422, detail="Upload the .xlsx error or warning file downloaded from the supplier panel.")
+    content = await file.read(MAX_PROCESSED_FILE_BYTES + 1)
+    if len(content) > MAX_PROCESSED_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="The file is over 10 MB; a Meesho processed file is far smaller.")
+    try:
+        rows = MeeshoAdapter.parse_processed_file(content)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if not rows:
+        raise HTTPException(status_code=422, detail="The file has no product rows (no SKU ID filled in).")
+
+    # Learned first, so the failed drafts' checks below already flag the words
+    learned = SettingsService.add_meesho_learned_words([k for r in rows if not r["passed"] for k in r["keywords"]])
+    products = {p.sku: p for p in db.query(Product).filter(Product.sku.in_([r["sku"] for r in rows])).all()}
+    drafts = _drafts_by_product(db, list(products.values()), "meesho")
+    failed, passed, unknown = [], [], []
+    for r in rows:
+        product = products.get(r["sku"])
+        if not product:
+            unknown.append(r["sku"])
+            continue
+        if r["passed"]:
+            passed.append({"product_id": product.id, "sku": product.sku})
+            continue
+        entry = {"product_id": product.id, "sku": product.sku, "status": r["status"], "message": r["message"],
+                 "keywords": r["keywords"]}
+        draft = drafts.get((product.id, "meesho"))
+        if draft:
+            draft.is_approved = False
+            draft.status = "draft"
+            draft.rejection_reason = f"Meesho QC: {r['message'] or r['status']}"
+            _refresh_rule_results(db, draft)  # the editor shows the flagged words at once
+        else:
+            entry["note"] = "no Meesho draft to mark"
+        failed.append(entry)
+    db.commit()
+    print(f"[MeeshoQC] Imported {file.filename}: {len(failed)} failed, {len(passed)} passed, "
+          f"{len(unknown)} unknown SKU(s), {len(learned)} new flagged word(s)", flush=True)
+    return {"rows": len(rows), "failed": failed, "passed": passed, "unknown_skus": unknown, "learned_words": learned,
+            "flagged_words": MeeshoAdapter.flagged_words()}
 
 
 @router.get("/meesho/fill-in-sheet", summary="Download the Meesho fields each product is missing, ready to fill and re-import")
@@ -818,6 +875,17 @@ def save_meesho_missing_fields(product_id: int, payload: MeeshoFieldValues, db: 
         "missing": _meesho_missing(db, product),
         "draft": draft.to_dict() if draft else None,
     }
+
+
+@router.get("/meesho/category-fields/{template_id}", summary="The fields the Add Product form asks for a Meesho category")
+def get_meesho_category_fields(template_id: str):
+    entry = MeeshoAdapter.template_by_ref(template_id) if template_id.isdigit() else None
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"No Meesho template has the id '{template_id}'.")
+    tmpl = MeeshoAdapter._load_template(entry)
+    if not tmpl:
+        raise HTTPException(status_code=500, detail=f"The Meesho template file for {entry['breadcrumb']} couldn't be read.")
+    return {"id": entry["id"], "breadcrumb": entry["breadcrumb"], "fields": MeeshoAdapter.category_fields(tmpl)}
 
 
 @router.get("/meesho/taxonomy", summary="Meesho's category tree (4 levels), each leaf with its template id")

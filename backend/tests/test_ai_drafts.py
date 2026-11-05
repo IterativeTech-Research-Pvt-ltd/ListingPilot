@@ -121,3 +121,20 @@ def test_preview_without_existing_draft_creates_it():
 
     assert res.get("preview") is not True
     assert client.get(f"/api/v1/drafts/product/{product['id']}?marketplace=meesho").json()["id"] == res["id"]
+
+
+def test_pre_check_uses_the_requested_marketplace():
+    import uuid
+    product = client.post("/api/v1/catalogue/products", json={
+        "sku": f"PRECHECK-{uuid.uuid4().hex[:8]}", "name": "Pre-check test bedsheet", "category": "Bedsheets",
+        "price": 999, "stock": 5, "attributes": {"Material": "Cotton"},
+    }).json()
+
+    def messages(marketplace):
+        res = client.get(f"/api/v1/drafts/product/{product['id']}?marketplace={marketplace}").json()
+        assert res["status"] == "not_generated"
+        return [issue["message"] for issue in res["rule_results"]["issues"]]
+
+    assert any("Amazon requires" in m for m in messages("amazon"))
+    assert not any("Amazon" in m for m in messages("meesho"))
+    assert not any("Amazon" in m for m in messages("flipkart"))

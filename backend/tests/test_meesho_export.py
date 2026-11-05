@@ -406,7 +406,12 @@ def test_sole_material_and_weave_pattern_are_not_filled_from_other_attributes():
 def test_several_categories_always_zip():
     buf, media_type, _ = MeeshoAdapter.generate_batch_export([tshirt("TS-7", "Zip tee"), bedsheet("BS-3", "Zip bedsheet")])
     assert media_type == "application/zip"
-    assert sorted(zipfile.ZipFile(buf).namelist()) == ["ListingPilot_Meesho_Bedsheets.xlsx", "ListingPilot_Meesho_Tshirts.xlsx"]
+    zf = zipfile.ZipFile(buf)
+    assert sorted(zf.namelist()) == ["ListingPilot_Meesho_Bedsheets.xlsx", "ListingPilot_Meesho_Tshirts.xlsx", "UPLOAD_CHECKLIST.txt"]
+    checklist = zf.read("UPLOAD_CHECKLIST.txt").decode()
+    # Each file with the exact category to pick in the supplier panel and its SKUs
+    assert "Category: Home & Kitchen > Home Furnishings > Bedding & Linen > Bedsheets  (template 12776)" in checklist
+    assert "1 product(s): BS-3" in checklist and "Import error / warning file" in checklist
 
 
 def test_two_templates_sharing_a_name_get_their_own_files():
@@ -414,10 +419,11 @@ def test_two_templates_sharing_a_name_get_their_own_files():
     with patch.object(MeeshoAdapter, "populate_template", side_effect=lambda t, items: io.BytesIO(t["path"].encode())):
         buf, media_type, _ = MeeshoAdapter.generate_batch_export([tshirt("TS-M1", "Men tee"), women])
     zf = zipfile.ZipFile(buf)
-    assert media_type == "application/zip" and len(zf.namelist()) == 2
+    files = [n for n in zf.namelist() if n.endswith(".xlsx")]
+    assert media_type == "application/zip" and len(files) == 2
     # Each file is named with its template's own id, so neither overwrites the other
-    assert all(re.fullmatch(r"ListingPilot_Meesho_Tshirts_\d+\.xlsx", n) for n in zf.namelist())
-    assert {zf.read(n).decode() for n in zf.namelist()} == {TSHIRTS, women["attributes"]["Meesho Category"]}
+    assert all(re.fullmatch(r"ListingPilot_Meesho_Tshirts_\d+\.xlsx", n) for n in files)
+    assert {zf.read(n).decode() for n in files} == {TSHIRTS, women["attributes"]["Meesho Category"]}
 
 
 def test_fill_in_sheet_round_trips_through_catalogue_import():
@@ -569,7 +575,8 @@ def test_saving_missing_fields_merges_only_valid_template_values():
     body = ok.json()
     assert body["product"]["attributes"]["Meesho Size"] == "Double Queen"
     assert body["product"]["attributes"]["Size"] == "90 x 100 in (double)"  # other attributes untouched
-    assert body["missing"]["fields"] == [] and body["missing"]["other"] == []
+    # Every field is in; what's left is the copy, which no value can supply
+    assert body["missing"]["fields"] == [] and [o["field"] for o in body["missing"]["other"]] == ["Meesho Draft"]
 
 
 def test_missing_fields_for_a_category_without_template():
@@ -594,7 +601,7 @@ def test_missing_fields_for_a_category_without_template():
 def test_full_catalog_request_gets_a_zip_even_for_one_category():
     buf, media_type, filename = MeeshoAdapter.generate_batch_export([tshirt("TS-Z1", "Lone tee")], force_zip=True)
     assert media_type == "application/zip" and filename.endswith(".zip")
-    assert zipfile.ZipFile(buf).namelist() == ["ListingPilot_Meesho_Tshirts.xlsx"]
+    assert zipfile.ZipFile(buf).namelist() == ["ListingPilot_Meesho_Tshirts.xlsx", "UPLOAD_CHECKLIST.txt"]
 
 
 SELLER = {k: LEGAL[k] for k in LEGAL}
@@ -865,3 +872,152 @@ def test_approval_rechecks_the_product_as_it_is_now():
     assert saved.status_code == 200 and saved.json()["draft"]["rule_results"]["has_errors"] is False
     approved = client.post(f"/api/v1/drafts/{draft_id}/approve")
     assert approved.status_code == 200, approved.text
+
+
+def test_a_descriptive_weight_named_like_the_column_is_read_as_amount_and_unit():
+    # Puja Articles has a 'Weight' column: 'Weight: 350 g' is the stated weight, not a template value
+    tmpl = MeeshoAdapter._load_template(MeeshoAdapter.template_by_ref(PUJA))
+    row = {"attrs": {"Weight": "350 g (set)"}, "measures": MeeshoAdapter._measurements({"Weight": "350 g (set)"}, tmpl)}
+    assert MeeshoAdapter._template_value("weight", "Weight", row, "Puja Articles") == 350
+    assert MeeshoAdapter._template_value("weight unit", "Weight Unit", row, "Puja Articles") == "g"
+    # The seller's exact Meesho value still wins
+    row["attrs"]["Meesho Weight"] = "0.4"
+    assert MeeshoAdapter._template_value("weight", "Weight", row, "Puja Articles") == "0.4"
+
+
+def test_each_product_gets_its_own_group_id_and_sizes_share_one():
+    # One Group ID for every row made Meesho merge five bedsheets into one product (processed file, 30 Oct)
+    items = [bedsheet("BS-G1", "First group bedsheet"), bedsheet("BS-G2", "Second group bedsheet"),
+             bedsheet("BS-G3", "Sized group bedsheet", **{"Style ID": "BS-G3"}),
+             bedsheet("BS-G3-K", "Sized group bedsheet", **{"Style ID": "BS-G3", "Meesho Variation": "King",
+                                                              "Meesho Size": "Double King", "Size": "108 x 108 in (king)"}),
+             bedsheet("BS-G4", "Own group bedsheet", **{"Meesho Group ID": "Group 09"})]
+    buf, _, _ = MeeshoAdapter.generate_batch_export(items, category_filter="Bedsheets")
+    groups = [bedsheet_row(buf, r)["Group ID"] for r in range(5, 10)]
+    assert groups == ["Group 01", "Group 02", "Group 03", "Group 03", "Group 09"]
+
+
+@pytest.mark.parametrize("description", [
+    "Maroon and beige cotton.",          # brand 'Maroon' on Meesho's list (processed file, 3 Nov 2026)
+    "A lotus print bedsheet.",           # 'Lotus Herbals'
+    "This is an indigo bedsheet.",       # 'An'
+    "Fits a 10 in drop.",                # 'SmartDrops'
+])
+def test_words_meesho_matches_to_brands_block_the_export(description):
+    tee = tshirt("TS-BR1", "Brand word tee")
+    tee["draft"]["description"] = description
+    assert [p["field"] for p in blocking([tee])] == ["Product Description"]
+
+
+@pytest.mark.parametrize("description, blocked", [
+    ("Shoppers also refer to it as a chadar.", True),     # a note to the reader, not product copy
+    ("Search for bedsheet to find similar styles.", True),
+    ("Cotton double bedsheet, also called a chadar.", False),
+    ("Cotton double bedsheet, बिस्तर की चादर.", True),       # Hinglish belongs in English letters
+    ("Hand‑polished “gold” finish — ₹ value.", False),     # typographic dashes, quotes and ₹ are fine
+])
+def test_meesho_copy_is_about_the_product_in_english_letters(description, blocked):
+    issues = RuleEngine.meesho_copy_issues(bedsheet_product(), {"title": "Gulmohar Home Cotton Double Bedsheet",
+                                                                "bullets": [], "description": description})
+    assert any(i["kind"] == "copy_style" and i["level"] == "error" for i in issues) == blocked
+
+
+def test_meesho_prompt_keeps_search_terms_inside_product_sentences(monkeypatch):
+    _groq(monkeypatch)
+    fake = AsyncMock(return_value={"title": "t"})
+    with patch.object(AIService, "_call_chat_completions", fake):
+        asyncio.run(AIService.generate_listing(bedsheet_product(), marketplace="meesho"))
+    system_prompt = fake.call_args.args[4]
+    assert "never mention shoppers, searching or keywords" in system_prompt
+    assert "written in English letters" in system_prompt and '"HEADLINE — fact"' in system_prompt
+
+
+def processed_file(items, results, extra_rows=()):
+    """A processed file as the supplier panel returns it: our upload with ERROR STATUS / ERROR MESSAGE filled in."""
+    buf, _, _ = MeeshoAdapter.generate_batch_export(items)
+    wb = openpyxl.load_workbook(buf)
+    tmpl = MeeshoAdapter.find_template(TSHIRTS)
+    ws = wb[tmpl["sheet_name"]]
+    col = {name: idx for idx, name in tmpl["columns"].items()}
+    last = 4
+    for r in range(5, ws.max_row + 1):
+        sku = ws.cell(r, col["SKU ID"]).value
+        if not sku:
+            continue
+        last = r
+        status, message = results.get(sku, ("", ""))
+        ws.cell(r, col["ERROR STATUS"], value=status or None)
+        ws.cell(r, col["ERROR MESSAGE"], value=message or None)
+    for sku, status, message in extra_rows:
+        last += 1
+        ws.cell(last, col["SKU ID"], value=sku)
+        ws.cell(last, col["ERROR STATUS"], value=status)
+        ws.cell(last, col["ERROR MESSAGE"], value=message)
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def test_a_processed_file_gives_each_sku_its_result_and_flagged_words():
+    content = processed_file([tshirt("TS-QP-1", "Flagged tee"), tshirt("TS-QP-2", "Clean tee")], {
+        # As Meesho writes it (processed file, 3 Nov 2026): keywords after a sentence too
+        "TS-QP-1": ("INVALID", "Maroon(Warning), velvetine(Warning)  detected in PRODUCT NAME. maroon(Warning)  "
+                               "detected in PRODUCT DESCRIPTION. Error keywords are not allowed"),
+    })
+    rows = {r["sku"]: r for r in MeeshoAdapter.parse_processed_file(content)}
+    assert rows["TS-QP-1"]["passed"] is False and rows["TS-QP-1"]["keywords"] == ["maroon", "velvetine"]
+    assert rows["TS-QP-2"]["passed"] is True and rows["TS-QP-2"]["keywords"] == []
+
+
+@pytest.mark.parametrize("content, reason", [
+    (b"SKU,Status\nX,1\n", "Not an Excel"),
+    (None, "No '<Category>-Fill this' sheet"),
+])
+def test_a_file_that_isnt_a_processed_file_is_refused(content, reason):
+    if content is None:
+        wb, out = openpyxl.Workbook(), io.BytesIO()
+        wb.save(out)
+        content = out.getvalue()
+    with pytest.raises(ValueError, match=re.escape(reason)):
+        MeeshoAdapter.parse_processed_file(content)
+
+
+def test_importing_a_processed_file_sends_failed_drafts_back_and_learns_words():
+    failing = _test_db_product(tshirt("TS-QC-1", "Velvetine tee"))
+    _with_meesho_draft(failing, "Gulmohar Home Velvetine Black Cotton Tee")
+    passing = _test_db_product(tshirt("TS-QC-2", "Passing tee"))
+    _with_meesho_draft(passing, "Gulmohar Home Plain Cotton Tee")
+    content = processed_file([tshirt("TS-QC-1", "Velvetine tee"), tshirt("TS-QC-2", "Passing tee")], {
+        "TS-QC-1": ("INVALID", "velvetine(Warning)  detected in PRODUCT DESCRIPTION. Error keywords are not allowed"),
+    }, extra_rows=[("NOT-IN-CATALOGUE", "INVALID", "whatever")])
+
+    res = client.post("/api/v1/drafts/meesho/processed-file",
+                      files={"file": ("processed.xlsx", content, "application/octet-stream")})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert [f["sku"] for f in body["failed"]] == ["TS-QC-1"] and [p["sku"] for p in body["passed"]] == ["TS-QC-2"]
+    assert body["unknown_skus"] == ["NOT-IN-CATALOGUE"] and "velvetine" in body["learned_words"]
+
+    # The failed draft can't be exported until it's fixed and approved again; the reason is shown
+    ready = {r["sku"]: r for r in client.get(f"/api/v1/drafts/meesho/readiness?product_ids={failing},{passing}").json()["products"]}
+    assert not ready["TS-QC-1"]["ready"] and ready["TS-QC-1"]["qc_reason"].startswith("Meesho QC: velvetine")
+    assert ready["TS-QC-2"]["ready"] and ready["TS-QC-2"]["qc_reason"] is None
+    # The learned word now blocks copy that uses it
+    product = Product(sku="X", name="x", category="Tshirts", price=1, attributes={}, images=[])
+    assert any(i["kind"] == "meesho_flagged_word" for i in RuleEngine.meesho_copy_issues(
+        product, {"title": "Velvetine tee", "bullets": [], "description": ""}))
+    # The failed draft's own checks were rerun with the learned word, so the editor shows it at once
+    draft = client.get(f"/api/v1/drafts/product/{failing}?marketplace=meesho").json()
+    assert any(i["kind"] == "meesho_flagged_word" for i in draft["rule_results"]["issues"])
+    # Fixed and approved, the QC reason is cleared
+    draft_id = draft["id"]
+    assert client.put(f"/api/v1/drafts/{draft_id}", json={"title": "Gulmohar Home Black Cotton Tee"}).status_code == 200
+    assert client.post(f"/api/v1/drafts/{draft_id}/approve").status_code == 200
+    assert client.get(f"/api/v1/drafts/product/{failing}?marketplace=meesho").json()["rejection_reason"] is None
+
+
+def test_an_unreadable_processed_file_changes_nothing():
+    res = client.post("/api/v1/drafts/meesho/processed-file", files={"file": ("errors.csv", b"a,b", "text/csv")})
+    assert res.status_code == 422 and ".xlsx" in res.json()["detail"]
+    res = client.post("/api/v1/drafts/meesho/processed-file", files={"file": ("errors.xlsx", b"not a workbook", "application/octet-stream")})
+    assert res.status_code == 422 and "Not an Excel" in res.json()["detail"]

@@ -4,7 +4,7 @@ from app.models.product import Product
 from app.services.template_generator import CATEGORIES_INFO
 from app.services.settings_service import SettingsService
 from app.services.meesho_adapter import (
-    MeeshoAdapter, MEESHO_FLAGGED_WORDS, PRODUCT_NAME_RULES, MEESHO_CATEGORY_ATTR,
+    MeeshoAdapter, PRODUCT_NAME_RULES, MEESHO_CATEGORY_ATTR,
 )
 from app.services.marketplace_limits import title_limit
 
@@ -295,7 +295,7 @@ class RuleEngine:
         text = " ".join([title, draft.get("description") or ""] + bullets)
         issues: List[Dict[str, Any]] = []
 
-        flagged = [w for w in MEESHO_FLAGGED_WORDS if re.search(rf"\b{w}\b", text, re.IGNORECASE)]
+        flagged = [w for w in MeeshoAdapter.flagged_words() if re.search(rf"\b{re.escape(w)}\b", text, re.IGNORECASE)]
         if flagged:
             issues.append({
                 "level": "error",
@@ -313,6 +313,23 @@ class RuleEngine:
                     "message": f"The title contains {what} ('{m.group(0).strip()}'), which Meesho doesn't allow in Product Name.",
                 })
                 break
+
+        # Listing text is about the product, in English letters: no notes to the reader about searching
+        meta = re.search(r"\b(?:shoppers?|search(?:e[sd]|ing)?|keywords?)\b", text, flags=re.IGNORECASE)
+        if meta:
+            issues.append({
+                "level": "error",
+                "kind": "copy_style",
+                "field": "description",
+                "message": f"The copy talks about '{meta.group(0)}'; write only about the product.",
+            })
+        if re.search(r"[^\x00-\u024F\u2010-\u20BF\u2122]", text):
+            issues.append({
+                "level": "error",
+                "kind": "copy_style",
+                "field": "description",
+                "message": "The copy uses non-English script; write Hinglish words in English letters.",
+            })
 
         tmpl, _ = MeeshoAdapter.resolve_item_template({"product": product})
         issues.extend(cls.copy_fact_issues(

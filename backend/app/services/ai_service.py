@@ -31,7 +31,7 @@ from app.core.config import settings
 from app.models.product import Product
 from app.services.settings_service import SettingsService
 from app.services.amazon_ptd_service import AmazonPTDService
-from app.services.meesho_adapter import MeeshoAdapter, MEESHO_FLAGGED_WORDS, MEESHO_CATEGORY_ATTR
+from app.services.meesho_adapter import MeeshoAdapter, MEESHO_CATEGORY_ATTR
 from app.services.marketplace_limits import title_limit, keyword_byte_limit, prompt_target
 from app.services.rule_engine import RuleEngine
 
@@ -57,8 +57,8 @@ Facts:
 
 Listing:
 1. Title: At most {title_chars} characters including spaces. The brand if one is given, the product type in the words shoppers search for, then two or three stated attributes that tell this product apart (colour, material, pattern, audience, pack count). No size, weight, dimension, price or marketplace name. Normal capitalisation, never all caps.
-2. Bullets: 3 to 5 short bullets. Each starts with a short capitalised headline and an em dash, and states one fact from the data. Leave a bullet out rather than pad it.
-3. Description: 2 to 4 short plain-text sentences (no HTML, no lists) that restate the stated facts and name the product type the way shoppers search for it, including the Hindi or Hinglish name Indian shoppers commonly type for this product type if there is one.
+2. Bullets: 3 to 5 short bullets. Each is a short capitalised headline, a space, an em dash, a space, then one fact from the data ("HEADLINE — fact"). Leave a bullet out rather than pad it.
+3. Description: 2 to 4 short plain-text sentences (no HTML, no lists) that restate the stated facts and name the product type in the words shoppers search for. If Indian shoppers commonly use a Hinglish name for this product type, work it into a sentence naturally, written in English letters. Write only about the product: never mention shoppers, searching or keywords, and never use Hindi script.
 4. Keywords: 5 to 8 search phrases shoppers type for this exact product, built from its product type and stated attributes, including Hinglish ones. All keywords together must fit within {keyword_bytes} bytes (UTF-8).
 
 Output must be STRICTLY valid JSON with no conversational text or markdown code fences:
@@ -173,7 +173,7 @@ Category Schema Guidelines (Amazon SP-API PTD):
         attrs = [f"- {k}: {v}" for k, v in (product.attributes or {}).items()
                  if v is not None and str(v).strip() and str(k).strip().lower() != MEESHO_CATEGORY_ATTR.lower()]
         filters = MeeshoAdapter.filter_fields(tmpl)
-        flagged = ", ".join(f"'{w}'" for w in MEESHO_FLAGGED_WORDS)
+        flagged = ", ".join(f"'{w}'" for w in MeeshoAdapter.flagged_words())
         user_prompt = f"""Write the Meesho listing for:
 SKU: {product.sku}
 Product Name: {product.name}

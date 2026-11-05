@@ -45,6 +45,13 @@ MEESHO_ATTR_PREFIX = "Meesho "
 # Product attribute holding the seller's Meesho category for the product: Meesho's template id
 # (as saved by the category picker) or its breadcrumb (as typed in an imported sheet)
 MEESHO_CATEGORY_ATTR = "Meesho Category"
+# Template columns the seller isn't asked for in the Add Product form: the form's own fields, Meesho's
+# system columns, and ids the export sets itself (a wrong Group ID merges products into one catalog)
+FORM_COVERED_COLUMNS = {
+    "fields + description:", "error status", "error message", "product name", "meesho price", "mrp", "inventory",
+    "image 1 (front)", "image 2", "image 3", "image 4", "product id / style id", "sku id", "brand name",
+    "group id", "product description",
+}
 # Joins category levels the way they're shown and typed; no Meesho category name contains '>'
 BREADCRUMB_SEP = " > "
 
@@ -79,8 +86,17 @@ UNUSABLE_IMAGE_LINKS = [
     ("a local", r"://(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|192\.168\.)"),
 ]
 
-# Meesho's catalogue QC flags these words in descriptions (seen in processed upload files)
-MEESHO_FLAGGED_WORDS = ("care", "comfort", "colors")
+# Words Meesho's catalogue QC flags in Product Name or Description (seen in processed upload files).
+# Some are ordinary words that match a brand on Meesho's list, which holds the row as "Brand/illegal
+# keywords" (3 Nov 2026: maroon -> Maroon, lotus -> Lotus Herbals, an -> An, drop -> SmartDrops)
+MEESHO_FLAGGED_WORDS = ("care", "comfort", "colors", "maroon", "lotus", "an", "drop")
+# A keyword in a processed file's ERROR MESSAGE, the word just before "(Warning)" or "(Error)":
+# "maroon(Warning)  detected in PRODUCT NAME. lotus(Warning)  detected in ..."
+_QC_KEYWORD = r"([^\s,.;:()]+)\((?:Warning|Error)\)"
+# ERROR STATUS values that mean the row passed
+_QC_PASSED = ("", "valid", "success", "pass", "qc pass")
+# Added to every export zip: which category to pick for each file in the supplier panel
+UPLOAD_CHECKLIST_NAME = "UPLOAD_CHECKLIST.txt"
 
 # Units a stated measurement may use, by the names the templates' unit dropdowns list
 LENGTH_UNITS = {"cm": "cm", "mm": "mm", "in": "inch", "inch": "inch", "inches": "inch", '"': "inch",
@@ -332,6 +348,7 @@ class MeeshoAdapter:
 
         sh = wb[fill_sheet]
         col_map = {}
+        hints = {}
         compulsory_cols = set()
         for col_idx in range(1, sh.max_column + 1):
             r2_val = str(sh.cell(2, col_idx).value or "").strip()
@@ -339,6 +356,7 @@ class MeeshoAdapter:
                 compulsory_cols.add(col_idx)
             r3_val = str(sh.cell(3, col_idx).value or "").strip()
             col_map[col_idx] = r3_val.split("\n")[0].strip() if r3_val else f"Col_{col_idx}"
+            hints[col_idx] = " ".join(" ".join(r3_val.split("\n")[1:]).split())
 
         dropdowns = {}
         if "Validation Sheet" in wb.sheetnames:
@@ -359,11 +377,58 @@ class MeeshoAdapter:
             "hierarchy": str(sh.cell(1, 1).value or ""),
             "total_columns": sh.max_column,
             "columns": col_map,
+            "hints": hints,
             "compulsory_columns": list(compulsory_cols),
             "dropdowns": dropdowns,
         }
         cls._loaded_templates[fpath] = template_info
         return template_info
+
+    @classmethod
+    def flagged_words(cls) -> List[str]:
+        """Words to keep out of Meesho copy: MEESHO_FLAGGED_WORDS plus those learned from this seller's processed files."""
+        return list(dict.fromkeys([*MEESHO_FLAGGED_WORDS, *SettingsService.get_meesho_learned_words()]))
+
+    @classmethod
+    def parse_processed_file(cls, content: bytes) -> List[Dict[str, Any]]:
+        """
+        Rows of a processed file from the supplier panel (an uploaded template with ERROR STATUS and
+        ERROR MESSAGE filled in): [{"sku", "passed", "status", "message", "keywords"}], `keywords` being the
+        words Meesho flagged ("maroon(Warning)"). Read-only and values only: formulas are never evaluated.
+        Raises ValueError, saying what's wrong, for anything that isn't a Meesho processed file.
+        """
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        except Exception:
+            raise ValueError("Not an Excel (.xlsx) file. Upload the error or warning file downloaded from the supplier panel.")
+        try:
+            sheet = next((s for s in wb.sheetnames if "-Fill this" in s), None)
+            if not sheet:
+                raise ValueError("No '<Category>-Fill this' sheet: this isn't a Meesho template or processed file.")
+            rows = list(wb[sheet].iter_rows(values_only=True))
+            if len(rows) < 3:
+                raise ValueError("The file's template rows are missing.")
+            headers = [str(c or "").strip().split("\n")[0].strip().upper() for c in rows[2]]
+            cols = {}
+            for name in ("ERROR STATUS", "ERROR MESSAGE", "SKU ID"):
+                if name not in headers:
+                    raise ValueError(f"No '{name}' column: this isn't a Meesho processed file.")
+                cols[name] = headers.index(name)
+            out = []
+            for r in rows[4:]:
+                cell = lambda name: str(r[cols[name]] if cols[name] < len(r) and r[cols[name]] is not None else "").strip()
+                sku = cell("SKU ID")
+                if not sku:
+                    continue
+                status, message = cell("ERROR STATUS"), cell("ERROR MESSAGE")
+                keywords = list(dict.fromkeys(k.strip().lower() for k in re.findall(_QC_KEYWORD, message) if k.strip()))
+                out.append({
+                    "sku": sku, "status": status, "message": message, "keywords": keywords,
+                    "passed": status.lower() in _QC_PASSED and not message,
+                })
+            return out
+        finally:
+            wb.close()
 
     @classmethod
     def get_available_templates(cls) -> List[Dict[str, Any]]:
@@ -756,6 +821,10 @@ class MeeshoAdapter:
         attrs = row["attrs"]
         # The seller's exact Meesho value ('Meesho Size') wins, then an attribute named like the column
         own = _attr(attrs, cls._seller_attribute(col_name))
+        # A size or weight read off the stated measurement beats a same-named descriptive attribute
+        # ('Weight: 350 g' on a template whose 'Weight' column takes 350 with 'g' in 'Weight Unit')
+        if own is None and row.get("measures", {}).get(cn) is not None:
+            return row["measures"][cn]
         direct = own if own is not None else _attr(attrs, col_name)
         if "net weight" in cn:
             return _grams(direct or _attr(attrs, "Net Weight (gms)", "Net Weight", "Weight"))
@@ -828,8 +897,33 @@ class MeeshoAdapter:
         if "product description" in cn:
             return row["description"]
         if "group id" in cn:
-            return _attr(attrs, "Group ID", "Group")
+            return _attr(attrs, "Group ID", "Group") or row.get("group_id")
         return None
+
+    @classmethod
+    def _group_ids(cls, rows: List[Dict[str, Any]], options: List[str]) -> Dict[str, str]:
+        """
+        {Style ID: Group ID} for the rows without a Group ID of their own: each product gets its own group,
+        in row order, from the template's options ('Group 01', 'Group 02'... or 1, 2... when free text);
+        size variants share their Style ID's group. Meesho treats rows sharing a Group ID as one catalog and
+        merges them into size variants of one product (processed file, 30 Oct 2026: five bedsheets sent with
+        Group ID 1 were rejected as different "sizes of the same product"). Options a seller already chose
+        aren't reused; styles beyond the template's options get none.
+        """
+        def number(opt: str) -> int:
+            m = re.search(r"\d+", opt)
+            return int(m.group()) if m else 10 ** 6
+
+        own = {(_attr(r["attrs"], f"{MEESHO_ATTR_PREFIX}Group ID", "Group ID", "Group") or "").strip().lower() for r in rows}
+        free = ([o for o in sorted(options, key=number) if o.strip().lower() not in own] if options
+                else [str(n) for n in range(1, len(rows) + 1) if str(n) not in own])
+        groups: Dict[str, str] = {}
+        for r in rows:
+            if _attr(r["attrs"], f"{MEESHO_ATTR_PREFIX}Group ID", "Group ID", "Group") or r["style_id"] in groups:
+                continue
+            if len(groups) < len(free):
+                groups[r["style_id"]] = free[len(groups)]
+        return groups
 
     @classmethod
     def _upload_rule_problems(cls, row: Dict[str, Any], written: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -859,9 +953,10 @@ class MeeshoAdapter:
                 break
 
         text = row.get("draft_text") or {}
+        words = cls.flagged_words()
         for field, value in (("Product Name", text.get("title")),
                              ("Product Description", " ".join([text.get("description") or "", *(text.get("bullets") or [])]))):
-            flagged = [w for w in MEESHO_FLAGGED_WORDS if re.search(rf"\b{w}\b", value or "", flags=re.IGNORECASE)]
+            flagged = [w for w in words if re.search(rf"\b{re.escape(w)}\b", value or "", flags=re.IGNORECASE)]
             if flagged:
                 add(field, f"uses {', '.join(repr(w) for w in flagged)}, which Meesho's QC flags; edit the draft")
 
@@ -955,6 +1050,9 @@ class MeeshoAdapter:
         problems: List[Dict[str, Any]] = []
         name_rows: Dict[str, List[Dict[str, Any]]] = {}
         seller_details = SettingsService.get_seller_details()
+        group_col = next((idx for idx, name in col_map.items() if name.strip().lower() == "group id"), None)
+        group_ids = cls._group_ids([cls._row_inputs(i) for i in products_with_drafts],
+                                   dropdowns.get(group_col, []) if group_col else [])
 
         # Ingest each product row starting at Row 5
         for idx, item in enumerate(products_with_drafts):
@@ -962,6 +1060,7 @@ class MeeshoAdapter:
             row = cls._row_inputs(item)
             row["seller_details"] = seller_details
             row["measures"] = cls._measurements(row["attrs"], template_info)
+            row["group_id"] = group_ids.get(row["style_id"])
             written: Dict[str, Any] = {}
 
             for col_idx, col_name in col_map.items():
@@ -1042,6 +1141,7 @@ class MeeshoAdapter:
 
         groups, unplaced = cls._group_by_template(products_with_drafts)
         generated_files: List[Tuple[str, io.BytesIO]] = []
+        checklist: List[Tuple[str, Dict[str, Any], List[str]]] = []
         problems: List[Dict[str, Any]] = list(unplaced)
         leaf_counts: Dict[str, int] = {}
         for tmpl, _ in groups.values():
@@ -1060,6 +1160,7 @@ class MeeshoAdapter:
                 # Men's and Women's Tshirts in one batch: the template's own id tells the files apart
                 safe_cat += f"_{tmpl['id']}"
             generated_files.append((f"ListingPilot_Meesho_{safe_cat}.xlsx", buf))
+            checklist.append((f"ListingPilot_Meesho_{safe_cat}.xlsx", tmpl, [cls._row_inputs(i)["sku"] for i in tmpl_items]))
 
         if any(p["blocking"] for p in problems):
             raise MeeshoExportIncomplete(problems)
@@ -1077,6 +1178,7 @@ class MeeshoAdapter:
         with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for file_name, file_buf in generated_files:
                 zf.writestr(file_name, file_buf.getvalue())
+            zf.writestr(UPLOAD_CHECKLIST_NAME, cls.upload_checklist(checklist))
         zip_buf.seek(0)
 
         date_stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
@@ -1085,6 +1187,37 @@ class MeeshoAdapter:
             "application/zip",
             f"ListingPilot_Meesho_Batch_{date_stamp}.zip",
         )
+
+    @classmethod
+    def upload_checklist(cls, files: List[Tuple[str, Dict[str, Any], List[str]]]) -> str:
+        """
+        The steps for uploading an export in the supplier panel: per file, the exact category to pick
+        (Meesho checks a file against the category it's uploaded under) and its SKUs, then what to do
+        with QC errors. Plain text, so it opens anywhere.
+        """
+        total = sum(len(skus) for _, _, skus in files)
+        lines = [
+            "MEESHO UPLOAD CHECKLIST (ListingPilot)",
+            f"{len(files)} file(s), {total} product(s). Upload each file under its own category.",
+            "",
+            "In the supplier panel: Catalog Uploads > Add Catalog in Bulk > search the category below >",
+            "pick exactly that path > Upload Template File > Upload.",
+            "",
+        ]
+        for n, (file_name, tmpl, skus) in enumerate(files, 1):
+            lines += [f"{n}. {file_name}",
+                      f"   Category: {tmpl['breadcrumb']}  (template {tmpl['id']})",
+                      f"   {len(skus)} product(s): {', '.join(skus)}",
+                      ""]
+        lines += [
+            "After QC (Catalog Uploads > Bulk Uploads):",
+            "- QC Pass: done. The catalog goes live on Meesho; ListingPilot keeps it as 'exported'.",
+            "- QC Error or Warning: download the error file there (Download Error File, or View Warning >",
+            "  Download File), then in ListingPilot open Meesho Upload > Import error / warning file.",
+            "  The failed products go back to unapproved with Meesho's reason. Fix them, approve, export only",
+            "  those, and upload with 'Upload New File' on the same row. Don't click 'Submit Anyway'.",
+        ]
+        return "\r\n".join(lines) + "\r\n"
 
     @classmethod
     def check_items(cls, products_with_drafts: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
@@ -1220,6 +1353,23 @@ class MeeshoAdapter:
             cls._seller_attribute(name): {"field": name, "options": dropdowns.get(idx, [])}
             for idx, name in tmpl["columns"].items()
         }
+
+    @classmethod
+    def category_fields(cls, tmpl: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        What the Add Product form asks for a loaded template, compulsory fields first: each with the
+        attribute it is saved under, the template's exact options and Meesho's own help text.
+        """
+        compulsory = set(tmpl["compulsory_columns"])
+        dropdowns = tmpl.get("dropdowns", {})
+        fields = [
+            {"field": name, "attribute": cls._seller_attribute(name), "required": idx in compulsory,
+             "options": dropdowns.get(idx, []), "hint": tmpl["hints"].get(idx, "")}
+            for idx, name in tmpl["columns"].items()
+            if name.strip().lower() not in FORM_COVERED_COLUMNS and name not in SELLER_DETAIL_FIELDS
+            and not name.startswith("Col_")
+        ]
+        return sorted(fields, key=lambda f: not f["required"])
 
     @classmethod
     def fact_vocabulary(cls, tmpl: Optional[Dict[str, Any]]) -> List[str]:
