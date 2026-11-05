@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import MeeshoQcImport from "./MeeshoQcImport";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000/api/v1";
 const SELECTION_KEY = "listingpilot.meeshoUpload.selected";
@@ -169,6 +170,7 @@ export default function MeeshoUploadPanel({ open, onClose, notify, onExported })
         </div>
 
         <div className="modal-body" style={{ maxHeight: "62vh", overflowY: "auto", padding: "12px 20px" }}>
+          <MeeshoQcImport onImported={loadAll} onPickFailed={ids => setSelected(ids)} notify={notify} />
           {loadError && <div style={{ color: "var(--bad)", fontSize: "0.84rem" }}>Couldn't check products: {loadError}</div>}
           {!rows && !loadError && <div style={{ color: "var(--muted)", fontSize: "0.84rem" }}>Checking every product against Meesho's templates…</div>}
           {rows && rows.length === 0 && <div style={{ color: "var(--muted)", fontSize: "0.84rem" }}>No products in the catalogue yet.</div>}
@@ -187,6 +189,9 @@ export default function MeeshoUploadPanel({ open, onClose, notify, onExported })
                     <span style={{ color: "var(--muted)", fontSize: "0.76rem" }}>{r.category}</span>
                     {badge(r)}
                   </label>
+                  {r.qc_reason && (
+                    <div style={{ margin: "4px 0 0 34px", fontSize: "0.76rem", color: "var(--bad)" }}>{r.qc_reason}</div>
+                  )}
                   {!r.ready && expanded[r.id] && (
                     <ul style={{ margin: "6px 0 0 34px", paddingLeft: "14px", fontSize: "0.78rem", color: "var(--muted)" }}>
                       {r.problems.map((p, i) => <li key={i}><b>{p.field}</b>: {p.reason}</li>)}

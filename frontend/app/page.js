@@ -6,6 +6,9 @@ import MeeshoRequiredFields from "./components/MeeshoRequiredFields";
 import SellerDetailsCard from "./components/SellerDetailsCard";
 import MeeshoCategoryDefaults from "./components/MeeshoCategoryDefaults";
 import MeeshoUploadPanel from "./components/MeeshoUploadPanel";
+import ProductImagesField, { discardUploadedImages } from "./components/ProductImagesField";
+import MeeshoCategoryFields, { EMPTY_MEESHO_CHOICE, meeshoChoiceAttributes, meeshoChoiceIssues } from "./components/MeeshoCategoryFields";
+import RuleChecks from "./components/RuleChecks";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000/api/v1";
 
@@ -93,6 +96,8 @@ export default function ListingPilotPhase3App() {
 
   // Draft Editor State
   const [editTitle, setEditTitle] = useState("");
+  // Which draft the editor fields hold; a save is refused while they still hold another draft's text
+  const [editDraftId, setEditDraftId] = useState(null);
   const [editBullets, setEditBullets] = useState(["", "", "", "", ""]);
   const [editDescription, setEditDescription] = useState("");
   const [editKeywords, setEditKeywords] = useState("");
@@ -126,6 +131,10 @@ export default function ListingPilotPhase3App() {
 
   const [showImportModal, setShowImportModal] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [newMeeshoChoice, setNewMeeshoChoice] = useState(EMPTY_MEESHO_CHOICE);
+  const [newImages, setNewImages] = useState([]);
+  const [isNewImageBusy, setIsNewImageBusy] = useState(false);
+  const [isSavingNewProduct, setIsSavingNewProduct] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
   const fileInputRef = useRef(null);
@@ -168,7 +177,6 @@ export default function ListingPilotPhase3App() {
     mrp: "",
     price: "",
     stock: "",
-    images: "",
     material: "",
     size: "",
     care: "",
@@ -245,6 +253,7 @@ export default function ListingPilotPhase3App() {
 
   useEffect(() => {
     if (selectedDraft) {
+      setEditDraftId(selectedDraft.id);
       setEditTitle(selectedDraft.title || "");
       const b = Array.isArray(selectedDraft.bullets) ? [...selectedDraft.bullets] : [];
       while (b.length < 5) b.push("");
@@ -256,6 +265,15 @@ export default function ListingPilotPhase3App() {
       if (selectedDraft.id && (selectedDraft.marketplace === "amazon" || targetMarketplace === "amazon")) {
         fetchAmazonPayloads(selectedDraft.id);
       }
+    } else {
+      // No draft on this marketplace: don't leave another channel's copy in the editor
+      setEditDraftId(null);
+      setEditTitle("");
+      setEditBullets(["", "", "", "", ""]);
+      setEditDescription("");
+      setEditKeywords("");
+      setEditTechnicalSpecs({});
+      setEditAplusContent({});
     }
   }, [selectedDraft]);
 
@@ -279,18 +297,15 @@ export default function ListingPilotPhase3App() {
     }
   }, [drawerProduct, selectedProduct]);
 
-  // When selectedProduct changes in catalogue or marketplace changes, find matching draft
+  // Keeps the open draft on the chosen marketplace: Save and Approve act on it, so another channel's must never stay open.
+  // A draft opened on load has no selected product yet, so its own product is adopted.
   useEffect(() => {
-    if (selectedProduct) {
-      const match = drafts.find(d => d.product_id === selectedProduct.id && d.marketplace === targetMarketplace);
-      if (match) {
-        setSelectedDraft(match);
-      } else {
-        // No draft for this marketplace yet; the editor stays empty until one is generated
-        setSelectedDraft(null);
-      }
-    }
-  }, [selectedProduct, targetMarketplace, drafts]);
+    const product = selectedProduct || products.find(p => p.id === selectedDraft?.product_id);
+    if (!product) return;
+    if (!selectedProduct) setSelectedProduct(product);
+    // No draft for this marketplace yet; the editor stays empty until one is generated
+    setSelectedDraft(drafts.find(d => d.product_id === product.id && d.marketplace === targetMarketplace) || null);
+  }, [selectedProduct, targetMarketplace, drafts, selectedDraft?.marketplace]);
 
   // ── Initial Fetch from Backend ────────────────────────────────────────────
 
@@ -374,6 +389,9 @@ export default function ListingPilotPhase3App() {
   // Writes the editor's current content (including an unsaved AI preview) to the DB; rules re-run server-side.
   // Throws on failure so callers never act on content that wasn't saved.
   const persistDraftEdits = async () => {
+    if (editDraftId !== selectedDraft.id) {
+      throw new Error("The editor hasn't finished loading this draft, so nothing was saved. Try again.");
+    }
     const res = await fetch(`${API_BASE}/drafts/${selectedDraft.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -382,7 +400,8 @@ export default function ListingPilotPhase3App() {
     if (!res.ok) throw new Error(`Save failed (HTTP ${res.status})`);
     const updated = await res.json();
     setDrafts(prev => prev.map(d => d.id === updated.id ? updated : d));
-    setSelectedDraft(updated);
+    // Only if it's still open: the seller may have moved to another product while this was saving
+    setSelectedDraft(prev => prev?.id === updated.id ? updated : prev);
     return updated;
   };
 
@@ -441,7 +460,7 @@ export default function ListingPilotPhase3App() {
       if (res.ok) {
         const approved = await res.json();
         setDrafts(prev => prev.map(d => d.id === approved.id ? approved : d));
-        setSelectedDraft(approved);
+        setSelectedDraft(prev => prev?.id === approved.id ? approved : prev);
         showToast("Draft Approved! 🎉", `Listing certified compliant for ${selectedDraft.marketplace.toUpperCase()}.`, "success");
       } else {
         throw new Error("Approve API failed");
@@ -466,7 +485,7 @@ export default function ListingPilotPhase3App() {
       if (res.ok) {
         const rejected = await res.json();
         setDrafts(prev => prev.map(d => d.id === rejected.id ? rejected : d));
-        setSelectedDraft(rejected);
+        setSelectedDraft(prev => prev?.id === rejected.id ? rejected : prev);
         showToast("Draft Marked as Rejected", "Item logged with rejection reason for audit.", "info");
       } else {
         throw new Error("Reject API failed");
@@ -481,6 +500,12 @@ export default function ListingPilotPhase3App() {
 
   // ── Photo Upload & Management Handlers ────────────────────────────────────
 
+  const errorDetail = async (res) => {
+    const body = await res.json().catch(() => null);
+    const detail = body && body.detail;
+    return (typeof detail === "string" && detail) || (detail && detail.message) || `HTTP ${res.status}`;
+  };
+
   const handleUploadPhotoFile = async (e) => {
     const file = e.target.files?.[0];
     const target = drawerProduct || selectedProduct;
@@ -489,19 +514,16 @@ export default function ListingPilotPhase3App() {
     try {
       const formData = new FormData();
       formData.append("file", file);
+      formData.append("sku", target.sku || "");
       const res = await fetch(`${API_BASE}/catalogue/upload-image`, {
         method: "POST",
         body: formData
       });
-      if (res.ok) {
-        const data = await res.json();
-        const currentImgs = Array.isArray(target.images) ? [...target.images] : [];
-        const updatedImages = [...currentImgs, data.url];
-        await saveProductImageChanges(updatedImages);
-        showToast("Photo Uploaded Successfully! 📷", `Added ${file.name} to product images.`, "success");
-      } else {
-        throw new Error("Upload failed");
-      }
+      if (!res.ok) throw new Error(await errorDetail(res));
+      const data = await res.json();
+      const currentImgs = Array.isArray(target.images) ? [...target.images] : [];
+      await saveProductImageChanges([...currentImgs, data.url]);
+      showToast("Photo Uploaded 📷", `${file.name} is stored and added to the product's photos.`, "success");
     } catch (err) {
       showToast("Photo Not Uploaded", `The photo wasn't saved to the product. ${err?.message || ""}`.trim(), "error");
     } finally {
@@ -514,20 +536,30 @@ export default function ListingPilotPhase3App() {
     const target = drawerProduct || selectedProduct;
     if (!newPhotoUrl.trim() || !target) return;
     const url = newPhotoUrl.trim();
+    if (!/^https?:\/\//i.test(url)) {
+      showToast("Not a Web Link", "Paste a full https:// link to the photo.", "warn");
+      return;
+    }
     const currentImgs = Array.isArray(target.images) ? [...target.images] : [];
-    const updatedImages = [...currentImgs, url];
-    await saveProductImageChanges(updatedImages);
-    setNewPhotoUrl("");
-    showToast("Photo Link Attached! 🔗", "External image URL added to product.", "success");
+    try {
+      await saveProductImageChanges([...currentImgs, url]);
+      setNewPhotoUrl("");
+      showToast("Photo Link Attached! 🔗", "The link is saved on the product.", "success");
+    } catch (err) {
+      showToast("Link Not Saved", `The server didn't save the photo link. ${err?.message || ""}`.trim(), "error");
+    }
   };
 
   const handleRemovePhoto = async (index) => {
     const target = drawerProduct || selectedProduct;
     if (!target) return;
     const currentImgs = Array.isArray(target.images) ? [...target.images] : [];
-    const updatedImages = currentImgs.filter((_, i) => i !== index);
-    await saveProductImageChanges(updatedImages);
-    showToast("Photo Removed", "Image deleted from product truth data.", "info");
+    try {
+      await saveProductImageChanges(currentImgs.filter((_, i) => i !== index));
+      showToast("Photo Removed", "The photo is no longer on the product.", "info");
+    } catch (err) {
+      showToast("Photo Not Removed", `The server didn't save the change. ${err?.message || ""}`.trim(), "error");
+    }
   };
 
   const handleSetPrimaryPhoto = async (index) => {
@@ -536,30 +568,28 @@ export default function ListingPilotPhase3App() {
     const currentImgs = Array.isArray(target.images) ? [...target.images] : [];
     const [moved] = currentImgs.splice(index, 1);
     currentImgs.unshift(moved);
-    await saveProductImageChanges(currentImgs);
-    showToast("Primary Photo Updated! ⭐", "Image moved to position #1.", "success");
+    try {
+      await saveProductImageChanges(currentImgs);
+      showToast("Primary Photo Updated! ⭐", "Image moved to position #1.", "success");
+    } catch (err) {
+      showToast("Primary Photo Not Changed", `The server didn't save the change. ${err?.message || ""}`.trim(), "error");
+    }
   };
 
+  // Saves the product's photo list and shows the server's copy; throws when the server didn't save it,
+  // so no caller reports a photo change that didn't happen
   const saveProductImageChanges = async (newImages) => {
     const base = drawerProduct || selectedProduct;
-    if (!base) return;
-    const updatedProd = {
-      ...base,
-      images: newImages,
-      image_count: newImages.length
-    };
-    if (drawerProduct) setDrawerProduct(updatedProd);
-    setSelectedProduct(updatedProd);
-    setProducts(prev => prev.map(p => p.id === updatedProd.id ? updatedProd : p));
-    try {
-      await fetch(`${API_BASE}/catalogue/products/${updatedProd.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ images: newImages })
-      });
-    } catch (err) {
-      console.warn("Could not sync image update to backend", err);
-    }
+    if (!base) throw new Error("No product selected.");
+    const res = await fetch(`${API_BASE}/catalogue/products/${base.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ images: newImages })
+    });
+    if (!res.ok) throw new Error(await errorDetail(res));
+    const saved = await res.json();
+    applySavedProduct(saved);
+    return saved;
   };
 
   // The server's copy after a save elsewhere (e.g. Meesho required fields), everywhere it's shown
@@ -652,6 +682,7 @@ export default function ListingPilotPhase3App() {
           });
         }
         setSelectedDraft(generated);
+        setEditDraftId(generated.id);
         setEditTitle(generated.title || "");
         setEditBullets(Array.isArray(generated.bullets) ? generated.bullets : ["", "", "", "", ""]);
         setEditDescription(generated.description || "");
@@ -902,6 +933,11 @@ export default function ListingPilotPhase3App() {
       showToast("Required Fields Missing", "Please provide SKU, Product Name and a selling price.", "warn");
       return;
     }
+    const { invalid, missing } = meeshoChoiceIssues(newMeeshoChoice);
+    if (invalid.length) {
+      showToast("Meesho Value Not Valid", `${invalid.map(f => f.field).join(", ")}: pick one of Meesho's options. Nothing was saved.`, "warn");
+      return;
+    }
     // Only what the seller typed is saved; blank fields stay blank (no placeholder values)
     const attributes = {};
     if (newForm.material.trim()) attributes.Material = newForm.material.trim();
@@ -916,11 +952,12 @@ export default function ListingPilotPhase3App() {
       price: parseFloat(newForm.price),
       mrp: newForm.mrp ? parseFloat(newForm.mrp) : null,
       stock: parseInt(newForm.stock) || 0,
-      images: newForm.images.trim() ? [newForm.images.trim()] : [],
-      attributes,
+      images: newImages.map(i => i.url),
+      attributes: { ...attributes, ...meeshoChoiceAttributes(newMeeshoChoice) },
       description: newForm.description || ""
     };
 
+    setIsSavingNewProduct(true);
     try {
       const res = await fetch(`${API_BASE}/catalogue/products`, {
         method: "POST",
@@ -932,13 +969,34 @@ export default function ListingPilotPhase3App() {
         setProducts(prev => [created, ...prev]);
         setSelectedProduct(created);
         setShowAddModal(false);
-        showToast("Product Created! 🚀", `SKU ${created.sku} saved to central truth.`, "success");
+        setNewImages([]);
+        setNewMeeshoChoice(EMPTY_MEESHO_CHOICE);
+        if (missing.length) {
+          showToast("Product Created, Meesho Fields Missing", `SKU ${created.sku} is saved, but its Meesho export stays blocked until ${missing.length} required field(s) are filled.`, "warn");
+        } else {
+          showToast("Product Created! 🚀", `SKU ${created.sku} saved to central truth.`, "success");
+        }
       } else {
         throw new Error("Failed to save product to the database");
       }
     } catch (err) {
       showToast("Product Not Created", `The server didn't save SKU ${payload.sku}. ${err?.message || ""}`.trim(), "error");
+    } finally {
+      setIsSavingNewProduct(false);
     }
+  };
+
+  // Leaving without adding the product: its uploaded photos come out of the bucket.
+  // Not while an upload or save is running, or a photo could land after the cleanup or be removed from a saved product.
+  const closeAddModal = async () => {
+    if (isNewImageBusy || isSavingNewProduct) return;
+    setShowAddModal(false);
+    try {
+      await discardUploadedImages(newImages);
+    } catch (err) {
+      showToast("Photos Not Removed", `The product wasn't added, but its uploaded photos are still in storage. ${err.message}`, "warn");
+    }
+    setNewImages([]);
   };
 
   // ── Settings & Administration Handlers (ADM-1 - ADM-4, F10) ───────────────
@@ -1029,7 +1087,7 @@ export default function ListingPilotPhase3App() {
       if (res.ok) {
         const masked = await res.json();
         setCredentials(masked);
-        showToast("Credentials Stored Securely 🔐", "Secrets saved in dynamic_settings.json without exposing plain text.", "success");
+        showToast("Seller ID Saved", "Secret keys aren't stored here; set them in the backend .env.", "success");
         setCredForm({
           amazon_seller_id: "",
           amazon_sp_api_client_id: "",
@@ -1040,7 +1098,9 @@ export default function ListingPilotPhase3App() {
           openrouter_api_key: ""
         });
       } else {
-        throw new Error("Failed to save credentials");
+        // The backend refuses secret keys (they'd be stored unencrypted) and says which .env variable to use
+        const body = await res.json().catch(() => null);
+        throw new Error((body && typeof body.detail === "string" && body.detail) || `HTTP ${res.status}`);
       }
     } catch (err) {
       showToast("Credentials Not Saved", `The server didn't save them. ${err?.message || ""}`.trim(), "error");
@@ -1591,7 +1651,7 @@ export default function ListingPilotPhase3App() {
                     {activeDraftProduct?.name}
                   </span>
                   <span className="chip" style={{ background: "var(--surface)", border: "1px solid var(--line)" }}>
-                    Channel: <b>{targetMarketplace.toUpperCase()}</b>
+                    Channel: <b>{(selectedDraft?.marketplace || targetMarketplace).toUpperCase()}</b>
                   </span>
                   {selectedDraft && (
                     <span className={`mp-status-badge mp-${selectedDraft.status}`}>
@@ -1628,14 +1688,14 @@ export default function ListingPilotPhase3App() {
                   <button 
                     className="btn btn-sm btn-primary"
                     onClick={handleSaveDraftEdits}
-                    disabled={isSavingEdit}
+                    disabled={isSavingEdit || !selectedDraft}
                   >
                     {isSavingEdit ? "Saving..." : "💾 Save Changes"}
                   </button>
                   <button 
                     className="btn btn-sm btn-success"
                     onClick={handleApproveDraft}
-                    disabled={isApproving || selectedDraft?.rule_results?.has_errors || selectedDraft?.status === "approved" || selectedDraft?.status === "exported" || selectedDraft?.status === "live"}
+                    disabled={isApproving || !selectedDraft || selectedDraft?.rule_results?.has_errors || selectedDraft?.status === "approved" || selectedDraft?.status === "exported" || selectedDraft?.status === "live"}
                     title={selectedDraft?.rule_results?.has_errors ? "Fix rule violations before approval" : "Certify listing"}
                   >
                     {isApproving ? "Approving..." : selectedDraft?.is_approved ? "✓ Approved" : "✓ Approve Listing"}
@@ -1694,7 +1754,7 @@ export default function ListingPilotPhase3App() {
                   <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
                     {/* Quality Score Meter */}
                     <div className="draft-section">
-                      <h4>{targetMarketplace.toUpperCase()} Content Quality Score</h4>
+                      <h4>{(selectedDraft?.marketplace || targetMarketplace).toUpperCase()} Content Quality Score</h4>
                       <div className="quality-meter">
                         <div className="quality-bar">
                           <div 
@@ -1722,22 +1782,8 @@ export default function ListingPilotPhase3App() {
 
                     {/* Rule Checklist */}
                     <div className="draft-section">
-                      <h4>{targetMarketplace.toUpperCase()} Compliance Checks</h4>
-                      <div className="rule-checks">
-                        {(selectedDraft?.rule_results?.checks || [
-                          { rule: `${targetMarketplace.toUpperCase()} Title Length`, pass: true, detail: "Within limit" },
-                          { rule: "Banned Claims & Superlatives", pass: true, detail: "No forbidden marketing claims" },
-                          { rule: "Mandatory Category Attributes", pass: true, detail: "Attributes specified" }
-                        ]).map((chk, i) => (
-                          <div key={i} className={`rule-item ${chk.pass ? "pass" : "fail"}`}>
-                            <span style={{ fontSize: "1rem" }}>{chk.pass ? "✓" : "⚠"}</span>
-                            <div style={{ flex: 1 }}>
-                              <div style={{ fontWeight: 600 }}>{chk.rule}</div>
-                              <div style={{ fontSize: "0.74rem", color: "var(--muted)" }}>{chk.detail}</div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
+                      <h4>{(selectedDraft?.marketplace || targetMarketplace).toUpperCase()} Compliance Checks</h4>
+                      <RuleChecks ruleResults={selectedDraft?.rule_results} rejectionReason={selectedDraft?.rejection_reason} />
                     </div>
 
                     {/* Master Source Context */}
@@ -3379,7 +3425,7 @@ export default function ListingPilotPhase3App() {
                     type="file" 
                     ref={photoFileInputRef} 
                     style={{ display: "none" }} 
-                    accept="image/*"
+                    accept="image/jpeg,image/png"
                     onChange={handleUploadPhotoFile}
                   />
                   <button 
@@ -3712,11 +3758,11 @@ export default function ListingPilotPhase3App() {
 
       {/* ── Add Product Modal ─────────────────────────────────────────────── */}
       {showAddModal && (
-        <div className="modal-overlay" onClick={() => setShowAddModal(false)}>
+        <div className="modal-overlay" onClick={closeAddModal}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "560px" }}>
             <div className="modal-header">
               <h3>Add Product to Master Catalogue</h3>
-              <button onClick={() => setShowAddModal(false)} style={{ background: "none", border: "none", fontSize: "1.2rem", cursor: "pointer" }}>✕</button>
+              <button onClick={closeAddModal} style={{ background: "none", border: "none", fontSize: "1.2rem", cursor: "pointer" }}>✕</button>
             </div>
             <div className="modal-body">
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
@@ -3817,15 +3863,13 @@ export default function ListingPilotPhase3App() {
                 </div>
               </div>
 
-              <div className="draft-field">
-                <label>Primary Image URL</label>
-                <input 
-                  type="text" 
-                  value={newForm.images} 
-                  onChange={(e) => setNewForm({ ...newForm, images: e.target.value })} 
-                  placeholder="https://... (leave blank to add photos later)" 
-                />
-              </div>
+              <ProductImagesField
+                images={newImages}
+                onChange={setNewImages}
+                sku={newForm.sku.trim().toUpperCase()}
+                onBusyChange={setIsNewImageBusy}
+                saving={isSavingNewProduct}
+              />
 
               <div className="draft-field">
                 <label>Master Product Description</label>
@@ -3836,10 +3880,14 @@ export default function ListingPilotPhase3App() {
                   placeholder="High-level description of materials, benefits, and specifications..." 
                 />
               </div>
+
+              <MeeshoCategoryFields choice={newMeeshoChoice} onChange={setNewMeeshoChoice} />
             </div>
             <div className="modal-footer">
-              <button className="btn" onClick={() => setShowAddModal(false)}>Cancel</button>
-              <button className="btn btn-primary" onClick={handleAddProduct}>Save Product</button>
+              <button className="btn" onClick={closeAddModal} disabled={isNewImageBusy || isSavingNewProduct}>Cancel</button>
+              <button className="btn btn-primary" onClick={handleAddProduct} disabled={isNewImageBusy || isSavingNewProduct}>
+                {isSavingNewProduct ? "Saving…" : isNewImageBusy ? "Uploading photo…" : "Save Product"}
+              </button>
             </div>
           </div>
         </div>
