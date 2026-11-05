@@ -7,6 +7,7 @@ import SellerDetailsCard from "./components/SellerDetailsCard";
 import MeeshoCategoryDefaults from "./components/MeeshoCategoryDefaults";
 import MeeshoUploadPanel from "./components/MeeshoUploadPanel";
 import ProductImagesField, { discardUploadedImages } from "./components/ProductImagesField";
+import DeleteProductDialog from "./components/DeleteProductDialog";
 import MeeshoCategoryFields, { EMPTY_MEESHO_CHOICE, meeshoChoiceAttributes, meeshoChoiceIssues } from "./components/MeeshoCategoryFields";
 import RuleChecks from "./components/RuleChecks";
 
@@ -131,6 +132,7 @@ export default function ListingPilotPhase3App() {
 
   const [showImportModal, setShowImportModal] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const [newMeeshoChoice, setNewMeeshoChoice] = useState(EMPTY_MEESHO_CHOICE);
   const [newImages, setNewImages] = useState([]);
   const [isNewImageBusy, setIsNewImageBusy] = useState(false);
@@ -999,6 +1001,17 @@ export default function ListingPilotPhase3App() {
     setNewImages([]);
   };
 
+  const handleProductDeleted = (product) => {
+    setDeleteTarget(null);
+    setDrawerProduct(null);
+    setSelectedProduct(prev => (prev?.id === product.id ? null : prev));
+    setSelectedDraft(prev => (prev?.product_id === product.id ? null : prev));
+    setProducts(prev => prev.filter(p => p.id !== product.id));
+    setDrafts(prev => prev.filter(d => d.product_id !== product.id));
+    showToast("Product Deleted", `${product.sku} and its drafts are gone from the catalogue.`, "success");
+    fetchAllData();
+  };
+
   // ── Settings & Administration Handlers (ADM-1 - ADM-4, F10) ───────────────
 
   const handleSaveBrandVoice = async () => {
@@ -1464,6 +1477,17 @@ export default function ListingPilotPhase3App() {
                               title="Open Product Inspector Drawer"
                             >
                               🔍 Inspect
+                            </button>
+                            <button
+                              className="btn btn-sm"
+                              style={{ marginLeft: "6px", color: "var(--bad)" }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDeleteTarget(p);
+                              }}
+                              title={`Delete ${p.sku}`}
+                            >
+                              Delete
                             </button>
                           </td>
                         </tr>
@@ -3679,6 +3703,9 @@ export default function ListingPilotPhase3App() {
                   {isSavingProductDetails ? <span className="spinner" style={{ width: "12px", height: "12px" }}></span> : "💾 Save Changes"}
                 </button>
               )}
+              <button className="btn" style={{ color: "var(--bad)" }} onClick={() => setDeleteTarget(drawerProduct)}>
+                Delete Product
+              </button>
               <button className="btn" onClick={() => setDrawerProduct(null)}>
                 ✕ Close
               </button>
@@ -3686,6 +3713,8 @@ export default function ListingPilotPhase3App() {
           </div>
         </div>
       )}
+
+      <DeleteProductDialog key={deleteTarget?.id ?? "closed"} product={deleteTarget} drafts={drafts} onClose={() => setDeleteTarget(null)} onDeleted={handleProductDeleted} />
 
       {/* ── Reject Draft Modal ────────────────────────────────────────────── */}
       {showRejectModal && (

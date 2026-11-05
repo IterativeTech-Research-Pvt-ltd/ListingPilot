@@ -123,6 +123,24 @@ def test_preview_without_existing_draft_creates_it():
     assert client.get(f"/api/v1/drafts/product/{product['id']}?marketplace=meesho").json()["id"] == res["id"]
 
 
+def test_deleting_a_product_deletes_its_drafts():
+    import uuid
+    product = client.post("/api/v1/catalogue/products", json={
+        "sku": f"DELETE-{uuid.uuid4().hex[:8]}", "name": "Delete test bedsheet", "category": "Bedsheets",
+        "price": 999, "stock": 5, "attributes": {"Material": "Cotton"},
+    }).json()
+    with patch("app.services.ai_service.AIService.generate_listing", new_callable=AsyncMock, return_value=MOCK_LISTING):
+        draft = client.post(f"/api/v1/drafts/generate/{product['id']}?marketplace=flipkart").json()
+    assert draft["product_id"] == product["id"]
+
+    assert client.delete(f"/api/v1/catalogue/products/{product['id']}").status_code == 200
+
+    remaining = client.get("/api/v1/drafts?marketplace=flipkart").json()
+    remaining = remaining if isinstance(remaining, list) else remaining.get("drafts", remaining.get("items", []))
+    assert draft["id"] not in [d["id"] for d in remaining]
+    assert client.delete(f"/api/v1/catalogue/products/{product['id']}").status_code == 404
+
+
 def test_pre_check_uses_the_requested_marketplace():
     import uuid
     product = client.post("/api/v1/catalogue/products", json={
