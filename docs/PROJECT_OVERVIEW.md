@@ -1,4 +1,6 @@
-# ListingPilot: How the Product Works Today
+# ListingPilot: How the Product Worked on 28 Oct 2026
+
+> **Out of date.** This is a snapshot, kept for history. For the current system read [`HOW_IT_WORKS.md`](HOW_IT_WORKS.md). Neon, the SQLite fallback, `backend/uploads/` and the test counts below no longer apply.
 
 > A description of the product **as it currently runs**: what each screen and button does, what happens behind it, which parts talk to real systems and which are simulated, and where the behaviour has gaps.
 >

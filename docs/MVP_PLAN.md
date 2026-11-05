@@ -16,7 +16,7 @@
 | Issue                                              | Fix                                                                                                                     |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
 | Meesho values silently snapped to dropdown options | Exact or high-confidence matches only; low-confidence snaps go to a review list; NEVER snap Brand                       |
-| Meesho image cells use local/Unsplash URLs         | Image ZIP export + paste-back of Meesho panel-generated links; block export without Image 1                             |
+| Meesho image cells use local/Unsplash URLs         | Done: signed links to the seller's bucket; export blocked without Image 1                                              |
 | Style ID = SKU, Group ID empty                     | Style ID = family+colour once variants exist; Group ID per design family                                                |
 | Meesho required fields from 6 hardcoded categories | Use the template's own "\* Compulsory Field" markers (done 3 Nov: export and approval)                                |
 | Meesho export ignores approval and truncates titles | Export only approved drafts; block (never cut) titles over 100 characters                                              |
@@ -28,11 +28,11 @@
 
 1. **Catalogue:** import with visible row errors; real pilot data; Legal Metrology fields and Seller Details complete.
 2. **Meesho category:** the seller picks it in a 4-level picker like the supplier panel (with search), shown as `A > B > C > D`. Stored by Meesho's template id; a default per seller category, overridable per product. Name matching only suggests, never decides.
-3. **Photos:** the seller adds real photos as a link or an uploaded PNG/JPEG/JPG file. Stored in free object storage (Supabase Storage proposed). Image 1 required; images 2–4 optional.
+3. **Photos:** the seller adds real photos as a link or an uploaded PNG/JPEG/JPG file. Stored in Supabase Storage. Image 1 required; images 2–4 optional. Add Product takes up to 4 and removes its uploads when the product isn't added.
 4. **Copy:** AI Meesho copy within limits (prompt asks for 90 % of each limit); edit; approve.
 5. **Upload selection:** the seller adds or removes products from the current bulk upload; each shows ready / its problems.
 6. **Export gate (all-or-nothing):** the file is produced only when every selected product passes: approved draft, title ≤ 100 characters, no Meesho-flagged words, no weight/dimension/price/portal names in Product Name, Meesho Price < MRP, Wrong/Defective price < Meesho Price, every compulsory field filled with exact template values, Image 1 a usable web link (Meesho's uploader or the seller's own storage; never Drive, stock or local).
-7. **Images for Meesho:** ZIP of the photos as JPEG/RGB `SKU_slot.jpg`; the seller uploads it in the panel's image uploader and pastes the links back; links matched to SKUs.
+7. **Images for Meesho:** signed links from the seller's bucket go straight into the image columns. Meesho accepted them on 3 Nov, so no image ZIP or paste-back is needed.
 8. **Delivery:** ZIP with one filled template per category plus an upload checklist (category path to pick per file, counts, reminder to return the processed file). Successful export marks drafts "exported", never "live".
 9. **Feedback:** import Meesho's processed file (ERROR STATUS / ERROR MESSAGE per row), store the reason on each draft, produce a correction sheet with only the failed rows.
 10. **Foundations kept:** honest UI, real health checks, encrypted credentials, migrations with workspace_id/user_id.
@@ -46,6 +46,8 @@ AI image generation, Shipping Optimiser, returns advisor, full Product Flags eng
 - Amazon: Item Highlights (≤125 chars; the 75-char title and 200-byte keyword limits are already done, 2 Nov), schema validation, validation preview, catalog search, publish, ASIN polling, price/stock update
 - Flipkart: template parser and export, FSN import, API price/stock if access is granted
 - Paid storage or image CDN, if the free tier runs out
+- Proposed, not approved: AI image generation from one seller photo for Image 2 to 4, with Generate, Regenerate and Use on each image. It stays out of scope until the seller decides timing, budget (no free API tier was found), whether seller review is enough in place of the spec's pixel checks, and Meesho's AI image policy
+- Proposed, not approved: supplier panel automation with Playwright, starting read-only (status sync, duplicate blocking, dry run) with real uploads last. Waiting on Meesho's terms for automated access
 
 ## Schedule
 
@@ -55,6 +57,7 @@ AI image generation, Shipping Optimiser, returns advisor, full Product Flags eng
 | 4 Nov     | **Done 3 Nov:** upload selection, readiness per product, all-or-nothing export gate; Meesho copy from the template and data with a fact check and up to 2 regenerations; size/weight columns for any template; `Meesho <column>` values; drafts marked "exported" |
 | 4–5 Nov   | **Done 3 Nov:** photo intake (link or JPEG/PNG upload → storage, signed links; Meesho accepts them, so no image ZIP or paste-back), upload checklist; processed-file import; QC passed for all pilot categories |
 | 5 Nov     | Seller: Seller Details, real attributes and photos, Meesho categories; regenerate and approve Meesho drafts                  |
+| 5 Nov     | **Done 5 Nov:** Add Product takes the Meesho category, that category\'s fields and up to 4 photos; draft editor stays on the chosen marketplace |
 | 6 Nov     | MILESTONE first real Meesho upload (at least 5 products)                                                                     |
 | 7–10 Nov  | Processed-file import + correction sheet (checked against the 6 Nov file); end-to-end test of every pilot template           |
 | 9–13 Nov  | QC feedback (~3 days) and fixes; upload the remaining pilot categories                                                       |
@@ -70,6 +73,6 @@ Honest UI > Meesho accepted > everything else.
 
 - [ ] No screen shows success for a failed action; no fake ASIN/FSN/Meesho IDs
 - [ ] Real pilot catalogue in production DB with Legal Metrology fields complete
-- [x] Meesho: every pilot category uploaded and accepted (or rejections imported and fixed) — 3 Nov 2026, all 19 demo products in 9 categories passed QC; one rejection imported and fixed
+- [x] Meesho: every pilot category uploaded and accepted (or rejections imported and fixed) — 3 Nov 2026, all 19 demo products in 9 categories passed QC; one rejection imported and fixed. That is file-level QC: on 4 Nov Inventory showed KRT-312, BLU-416 and MJR-521 still under QC and QLT-611 blocked
 - [x] Meesho export refuses anything incomplete; processed-file errors come back to the drafts
 - [ ] Credentials encrypted; migrations with workspace_id/user_id; tests passing

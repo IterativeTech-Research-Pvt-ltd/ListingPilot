@@ -15,7 +15,7 @@ ListingPilot turns one master product sheet into complete, rule-checked listings
 
 - **Template Generator**: Official multi-sheet Excel workbook with Forest Green styling, sample pilot SKUs, category-specific attribute requirements, and marketplace photography guidelines.
   `GET /api/v1/catalogue/template`
-- **Import Engine**: Supports Excel (.xlsx), CSV (.csv), and Tally ERP XML exports. Smart fuzzy header matching, duplicate SKU detection, prohibited claims pre-check.
+- **Import Engine**: Supports Excel (.xlsx), CSV (.csv), and Tally ERP XML exports. Exact header matching, duplicate SKU detection, prohibited claims pre-check.
   `POST /api/v1/catalogue/import`
 - **Export Engine**: Full catalogue export as Excel, CSV, or JSON with dynamic attribute columns.
   `GET /api/v1/catalogue/export?format=xlsx|csv|json`
@@ -36,8 +36,8 @@ ListingPilot turns one master product sheet into complete, rule-checked listings
 
 #### Compliance Rule Engine (RUL-1 to RUL-5)
 
-- Prohibited claims check, title length limits per marketplace (Amazon 200 / Flipkart 150 / Meesho 95 chars).
-- Minimum image count validation (3+) and white background requirement.
+- Prohibited claims check, title length limits per marketplace (Amazon 75 / Flipkart 120 / Meesho 100 chars).
+- Minimum image count per marketplace (Amazon 3, Flipkart and Meesho 1) and white background requirement.
 - Quality score (0-25) with per-issue severity and remediation hints.
 
 #### Listing Draft Workflow (WF-1 to WF-3)
@@ -50,7 +50,7 @@ ListingPilot turns one master product sheet into complete, rule-checked listings
 
 - **Amazon SP-API**: Stub mode (simulates ASIN). Live mode activated by AMAZON*SP_API*\* credentials in .env.
 - **Flipkart Seller API**: Stub mode (simulates FSN). Live mode activated by FLIPKART_APP_ID / FLIPKART_APP_SECRET.
-- **Meesho Bulk Export**: Fully functional. Generates .xlsx files ready for direct upload. No API key needed.
+- **Meesho Bulk Export**: Fully functional. Generates one .xlsx per Meesho category for upload in the supplier panel, which is done by hand. No API key needed.
 
 #### Reports and Baseline Metrics (RPT-1)
 
@@ -70,6 +70,7 @@ ListingPilot turns one master product sheet into complete, rule-checked listings
 - Drag-and-drop file import modal with real-time row-level validation feedback.
 - Product Inspector drawer: dynamic attributes, photo gallery, marketplace pre-check status.
 - AI Drafts and Review tab: generate, edit, approve, publish per marketplace.
+- Add Product form with the Meesho category, that category's fields and up to 4 photos (links or uploads).
 - Multi-Channel Hub: Amazon / Flipkart / Meesho status matrix per SKU.
 - Reports tab: quality scores, pipeline counts, ROI metrics.
 
@@ -127,7 +128,7 @@ _(Note: If Redis is offline in local dev, ListingPilot automatically falls back 
 .venv\Scripts\python.exe -m pytest backend/tests -v
 ```
 
-**32/32 tests passing** across all phases (catalogue, import/export, AI drafts, marketplace adapters, Celery & multi-tenant tasks, settings, health).
+**239 tests passing** (5 Nov 2026). The suite needs `TEST_DATABASE_URL`, a separate database, and takes about 6 minutes.
 
 ---
 
