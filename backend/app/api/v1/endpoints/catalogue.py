@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, Response
 from fastapi.responses import StreamingResponse
+from sqlalchemy import String, cast
 from sqlalchemy.orm import Session
 from typing import Optional, List
 import io
@@ -19,6 +20,7 @@ from app.services.catalogue_service import CatalogueService
 from app.services.template_generator import generate_master_catalogue_template
 from app.services.catalogue_parser import CatalogueParser
 from app.services.catalogue_exporter import CatalogueExporter
+from app.services import storage_service
 
 router = APIRouter()
 
@@ -27,36 +29,49 @@ def get_categories(db: Session = Depends(get_db)):
     """Returns a list of all distinct product categories in the Master Catalogue."""
     return CatalogueService.get_categories(db)
 
-import uuid
-import shutil
-from pathlib import Path
+@router.post("/upload-image", summary="Upload a product photo (JPEG or PNG) to photo storage")
+def upload_product_image(file: UploadFile = File(...), sku: str = Form("")):
+    """
+    Stores a JPEG or PNG photo (checked by its content, at most 10 MB) in Supabase Storage and returns a
+    signed link for the product's images. 422 for a file that isn't one; 503 when storage isn't configured
+    or didn't take it. Nothing is ever kept on this server's disk.
+    """
+    content = file.file.read(storage_service.MAX_IMAGE_BYTES + 1)
+    try:
+        url = storage_service.upload_product_photo(content, sku)
+    except storage_service.PhotoRejected as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except storage_service.StorageUnavailable as e:
+        print(f"[Storage] Upload failed for {sku or 'product'}: {e}", flush=True)
+        raise HTTPException(status_code=503, detail=f"Photo not saved: {e}")
+    return {"url": url, "original_name": file.filename}
 
-UPLOAD_DIR = Path(__file__).resolve().parents[4] / "uploads"
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+@router.post("/discard-images", summary="Remove photos uploaded for a product that wasn't added")
+def discard_uploaded_images(urls: List[str] = Form(...), db: Session = Depends(get_db)):
+    """
+    Add Product calls this when a photo it uploaded isn't used. Form fields, so the browser can also send
+    it as the page closes. Every link is checked before anything is removed (422 for one that isn't a recent
+    upload), and a photo any product uses is kept. 503 when storage doesn't remove one.
+    """
+    if len(urls) > storage_service.MAX_DISCARD:
+        raise HTTPException(status_code=422, detail=f"At most {storage_service.MAX_DISCARD} photos at once. Nothing was removed.")
+    try:
+        names = [storage_service.discardable_photo_name(url) for url in urls]
+    except storage_service.PhotoRejected as e:
+        raise HTTPException(status_code=422, detail=f"{e} Nothing was removed.")
+    removed = kept = 0
+    for name in names:
+        if db.query(Product.id).filter(cast(Product.images, String).contains(name, autoescape=True)).first():
+            kept += 1
+            continue
+        try:
+            storage_service.delete_photo(name)
+        except storage_service.StorageUnavailable as e:
+            print(f"[Storage] Discard failed for {name}: {e}", flush=True)
+            raise HTTPException(status_code=503, detail=f"Photo not removed: {e}")
+        removed += 1
+    return {"removed": removed, "kept": kept}
 
-@router.post("/upload-image", summary="Upload product image file (File or Link workflow)")
-async def upload_product_image(file: UploadFile = File(...)):
-    """Accepts image files (.jpg, .jpeg, .png, .webp), saves to backend/uploads, and returns accessible URL."""
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No file provided")
-    
-    ext = Path(file.filename).suffix.lower()
-    if ext not in [".jpg", ".jpeg", ".png", ".webp", ".gif"]:
-        raise HTTPException(status_code=400, detail="Unsupported image format. Allowed: .jpg, .jpeg, .png, .webp")
-    
-    unique_filename = f"prod_{uuid.uuid4().hex[:12]}{ext}"
-    target_path = UPLOAD_DIR / unique_filename
-    
-    with open(target_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-        
-    image_url = f"http://localhost:8000/static/uploads/{unique_filename}"
-    return {
-        "success": True,
-        "url": image_url,
-        "filename": unique_filename,
-        "original_name": file.filename
-    }
 
 @router.get("/template", summary="Download official Master Catalogue Excel Template (CAT-1)")
 def download_template():

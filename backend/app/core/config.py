@@ -23,6 +23,11 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5173",
     ]
     
+    # Product photos: Supabase Storage, written only by the backend (the key never reaches the browser)
+    SUPABASE_URL: str = ""
+    SUPABASE_SERVICE_KEY: str = ""
+    SUPABASE_STORAGE_BUCKET: str = "product-images"
+
     # Brand details default
     DEFAULT_BRAND: str = "Gulmohar Home"
     

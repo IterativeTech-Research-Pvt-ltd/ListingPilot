@@ -52,7 +52,8 @@ app.dependency_overrides[get_db] = override_get_db
 
 # No test may call a real AI provider: without keys generation uses the built-in generator.
 # Tests of a provider set their own fake key and mock httpx (see test_ai_groq.py).
-for _key in ("GROQ_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"):
+# Photo storage likewise: tests mock httpx (see test_photo_storage.py), never the real bucket.
+for _key in ("GROQ_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "SUPABASE_SERVICE_KEY"):
     setattr(settings, _key, "")
 
 from app.seeds.seed_pilot_data import PILOT_PRODUCTS
@@ -71,7 +72,11 @@ def setup_test_database():
     
     existing_count = db.query(Product).count()
     if existing_count < 50:
-        CatalogueService.batch_upsert_products(db, PILOT_PRODUCTS)
+        # Tests never depend on the seed's photos (the seller's bucket): each product gets five example links
+        CatalogueService.batch_upsert_products(db, [
+            {**p, "images": [f"https://example.com/{p['sku']}-{n}.jpg" for n in range(1, 6)]}
+            for p in PILOT_PRODUCTS
+        ])
         # Add additional items to reach 55
         extra_products = []
         categories = ["Bedsheets", "Pooja items", "Kurtas", "Planters", "Ethnic footwear", "Quilts"]

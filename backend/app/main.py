@@ -26,13 +26,6 @@ app = FastAPI(
     redoc_url=f"{settings.API_V1_STR}/redoc",
 )
 
-from fastapi.staticfiles import StaticFiles
-from pathlib import Path
-import os
-
-UPLOAD_DIR = Path(__file__).resolve().parents[1] / "uploads"
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
 import time
 from fastapi import Request
 
@@ -56,7 +49,7 @@ async def log_requests(request: Request, call_next):
     return response
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
-app.mount("/static/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+# Product photos live in Supabase Storage (services/storage_service.py); this server serves no files
 
 @app.get("/")
 def root():
