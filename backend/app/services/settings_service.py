@@ -21,6 +21,16 @@ SETTINGS_FILE = Path(
 
 # The seller's legal details, the same on every product. Marketplace exports use them for any
 # product that doesn't carry its own value. Names match the Meesho template columns.
+# Secret credentials and the .env variable each one is read from; never written to the settings file
+SECRET_CREDENTIAL_ENV = {
+    "amazon_sp_api_client_id": "AMAZON_SP_API_CLIENT_ID",
+    "amazon_sp_api_client_secret": "AMAZON_SP_API_CLIENT_SECRET",
+    "amazon_sp_api_refresh_token": "AMAZON_SP_API_REFRESH_TOKEN",
+    "flipkart_app_id": "FLIPKART_APP_ID",
+    "flipkart_app_secret": "FLIPKART_APP_SECRET",
+    "openrouter_api_key": "OPENROUTER_API_KEY",
+}
+
 SELLER_DETAIL_FIELDS = [
     "Country of Origin",
     "Manufacturer Name", "Manufacturer Address", "Manufacturer Pincode",
@@ -172,6 +182,22 @@ class SettingsService:
         return dict(defaults)
 
     @classmethod
+    def get_meesho_learned_words(cls) -> List[str]:
+        """Words Meesho's QC flagged in this seller's processed files, learned on import (lowercase)."""
+        return list(cls._ensure_loaded().get("meesho_learned_flagged_words", []))
+
+    @classmethod
+    def add_meesho_learned_words(cls, words: List[str]) -> List[str]:
+        """Adds words to the learned list (kept unique, lowercase); returns the ones that were new."""
+        data = cls._ensure_loaded()
+        known = list(data.get("meesho_learned_flagged_words", []))
+        new = [w for w in dict.fromkeys(w.strip().lower() for w in words if w and w.strip()) if w not in known]
+        if new:
+            data["meesho_learned_flagged_words"] = known + new
+            cls._save(data)
+        return new
+
+    @classmethod
     def get_brand_voice(cls) -> Dict[str, str]:
         """Retrieves brand voice for AIService prompts (ADM-1)."""
         data = cls._ensure_loaded()
@@ -239,12 +265,20 @@ class SettingsService:
 
     @classmethod
     def update_credentials(cls, new_creds: Dict[str, str]) -> Dict[str, Any]:
-        """Allows client to update credentials safely (ADM-3)."""
+        """
+        Saves non-secret account details (the Amazon seller ID). Secrets are refused: this settings file is
+        plain JSON and credentials must be encrypted at rest, so keys and tokens belong in the backend's .env
+        (SECRET_CREDENTIAL_ENV names the variable) until encrypted storage exists. Raises ValueError, saving nothing.
+        """
+        given = {k: v.strip() for k, v in new_creds.items() if v and v.strip() and not v.startswith("***")}
+        secrets = [k for k in given if k in SECRET_CREDENTIAL_ENV]
+        if secrets:
+            raise ValueError("Not saved: ListingPilot doesn't store secret keys in its settings file (they'd be unencrypted). "
+                             "Set them in the backend .env instead: "
+                             + ", ".join(f"{SECRET_CREDENTIAL_ENV[k]} for {k}" for k in secrets) + ".")
         data = cls._ensure_loaded()
         current = data.get("credentials", {})
-        for k, v in new_creds.items():
-            if v and v.strip() and not v.startswith("***"):
-                current[k] = v.strip()
+        current.update(given)
         data["credentials"] = current
         cls._save(data)
         return cls.get_masked_credentials()

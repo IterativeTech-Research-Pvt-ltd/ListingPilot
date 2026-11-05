@@ -99,9 +99,12 @@ def get_credentials():
 
 @router.put("/credentials", response_model=Dict[str, Any])
 def update_credentials(payload: CredentialsUpdate):
-    """Safely updates marketplace and AI credentials without exposing plaintext secrets (ADM-3)."""
+    """Saves the non-secret seller ID; secret keys are refused (422) and belong in the backend .env (ADM-3)."""
     data = payload.model_dump(exclude_unset=True)
-    return SettingsService.update_credentials(data)
+    try:
+        return SettingsService.update_credentials(data)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 @router.get("/system-health", response_model=Dict[str, Any])

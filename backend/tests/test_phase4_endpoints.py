@@ -82,26 +82,25 @@ def test_dynamic_banned_claims_and_rule_engine_integration():
     assert any(i["kind"] == "banned_claim" for i in eval_result["issues"])
 
 
-def test_update_credentials_masked(monkeypatch):
-    """Verify credentials updating and masking (ADM-3)."""
-    # The AI engine status follows AI_PROVIDER; pin it so a saved OpenRouter key is what's reported
-    from app.core.config import settings
-    monkeypatch.setattr(settings, "AI_PROVIDER", "openrouter")
-    update_payload = {
+def test_secret_credentials_are_refused_not_stored_unencrypted():
+    """Secrets aren't written to the plain-JSON settings file (credentials are encrypted at rest or not stored)."""
+    from app.services.settings_service import SettingsService
+    before = dict(SettingsService.get_raw_settings().get("credentials", {}))
+    res = client.put("/api/v1/settings/credentials", json={
         "amazon_seller_id": "TEST_SELLER_ID",
-        "amazon_sp_api_client_id": "test-client-id-1234567890",
-        "flipkart_app_id": "test-flipkart-app-id",
-        "openrouter_api_key": "sk-or-v1-abcdef-test-only"
-    }
-    put_res = client.put("/api/v1/settings/credentials", json=update_payload)
-    assert put_res.status_code == 200
-    creds = put_res.json()
-    
-    assert creds["amazon"]["seller_id"] == "TEST_SELLER_ID"
-    assert creds["amazon"]["has_client_id"] is True
-    assert "1234567890" not in creds["amazon"]["client_id_masked"]  # masked
-    assert creds["flipkart"]["has_app_id"] is True
-    assert creds["ai_engine"]["has_api_key"] is True
+        "amazon_sp_api_client_secret": "test-secret-1234567890",
+        "openrouter_api_key": "sk-or-v1-abcdef-test-only",
+    })
+    assert res.status_code == 422
+    detail = res.json()["detail"]
+    assert "AMAZON_SP_API_CLIENT_SECRET" in detail and "OPENROUTER_API_KEY" in detail and ".env" in detail
+    assert "test-secret" not in detail
+    assert SettingsService.get_raw_settings().get("credentials", {}) == before  # nothing saved, not even the seller ID
+
+
+def test_the_seller_id_is_saved_and_returned():
+    res = client.put("/api/v1/settings/credentials", json={"amazon_seller_id": "TEST_SELLER_ID"})
+    assert res.status_code == 200 and res.json()["amazon"]["seller_id"] == "TEST_SELLER_ID"
 
 
 def test_system_health_monitoring():
