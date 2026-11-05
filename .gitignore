@@ -75,6 +75,9 @@ Thumbs.db
 # --- Runtime admin settings & credentials (created on first run by SettingsService) ---
 backend/app/data/dynamic_settings.json
 
+# --- Claude Code: links generated from .agents/skills by .claude/scripts/sync-skills.mjs ---
+.claude/skills/
+
 # misc
 notes.txt
 ex.txt
