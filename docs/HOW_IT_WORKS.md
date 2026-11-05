@@ -82,6 +82,8 @@ The dashboard is one client component, `frontend/app/page.js` (4,546 lines). Tab
 
 ### 3.1 Catalogue tab (`page.js:1747`)
 
+**Add Product** (top right of the dashboard) has an optional Meesho section (`components/MeeshoCategoryFields.jsx`). The seller picks the Meesho category, and the form lists that category's fields from `GET /drafts/meesho/category-fields/{template_id}` (`MeeshoAdapter.category_fields`): compulsory first, optional collapsed, with the template's exact options and Meesho's help text as a tooltip. Dropdowns of more than 50 options become a search box. Fields the form already has (`FORM_COVERED_COLUMNS`), Seller Details from Settings, and the Style and Group IDs the export sets aren't asked for. Filled values are sent in the same create request, as `Meesho <column>` attributes with `Meesho Category`, so a product is never half-saved. A value that isn't one of the options stops the save. Missing compulsory fields don't: the product is saved, the toast says how many remain, and the export gate still blocks it. Choosing another category clears the Meesho values. The create endpoint itself doesn't check Meesho values; the form and the export do. Its **Product Images** field (`components/ProductImagesField.jsx`) takes up to 4 photos, Meesho's image columns: pasted links and uploaded JPEG/PNG files (several at once, each through `POST /catalogue/upload-image` to the bucket), with the first as the front photo, which the export writes to Image 1. Save and Cancel are disabled during an upload or a save. **A product that isn't added leaves no photos behind:** removing a photo, Cancel, the close button or clicking outside the form call `POST /catalogue/discard-images`, and closing or reloading the page sends the same request as a beacon (best effort, and never during a save, since a leftover file is better than a product with broken photos). The route has no login, so it removes a file only when its link is in this bucket, its name is exactly what `upload_product_photo` makes, it was uploaded in the last 24 hours (`DISCARD_WINDOW`; a date in the future or one that can't exist is refused) and no product references it; one bad link refuses the whole request (422), and a storage failure is a 503 that the form shows. Pasted links are never touched.
+
 | Button / action | Handler | API call | What the backend does |
 | --- | --- | --- | --- |
 | Download template | `handleDownloadTemplate` (`page.js:1264`) | `GET /catalogue/template` | Builds a styled multi-sheet workbook (`backend/app/services/template_generator.py:172`) with column guidance, sample SKUs and `CATEGORIES_INFO` (required attributes and min photos for 6 categories) |
@@ -90,7 +92,7 @@ The dashboard is one client component, `frontend/app/page.js` (4,546 lines). Tab
 | Add product (modal) | `handleAddProduct` (`page.js:1390`) | `POST /catalogue/products` | `CatalogueService.create_product` |
 | Click a product → Inspector drawer (`page.js:3683`) | — | — | Attributes, photo gallery, per-marketplace pre-check |
 | Inspector: save details | `handleSaveProductDetails` (`page.js:833`) | `PUT /catalogue/products/{id}` | `CatalogueService.update_product` |
-| Inspector: upload photo | `handleUploadPhotoFile` (`page.js:745`) | `POST /catalogue/upload-image`, then `PUT /catalogue/products/{id}` | Saves `prod_<hex>.<ext>` to `backend/uploads/`; returns `http://localhost:8000/static/uploads/...` (`catalogue.py:37-58`). Accepts jpg/jpeg/png/webp/gif; no size or content check |
+| Inspector: upload photo | `handleUploadPhotoFile` (`page.js`) | `POST /catalogue/upload-image` (with the SKU), then `PUT /catalogue/products/{id}` | The backend stores the photo in Supabase Storage (`services/storage_service.py`) as `<SKU>_<time>_<id>.jpg/png` and returns a 5-year signed link; JPEG or PNG only (checked by content, not name), at most 10 MB; 422 for anything else, 503 when storage isn't configured or reachable; nothing is kept on the server's disk. Every photo change (upload, link, remove, make primary) waits for the server and shows success only after it saved; a pasted link must start with http(s):// |
 | Inspector: add URL, remove, set primary | `handleAddPhotoUrl` / `handleRemovePhoto` / `handleSetPrimaryPhoto` (`page.js:779-808`) | `PUT /catalogue/products/{id}` via `saveProductImageChanges` (`page.js:809`) | Updates `images` and `image_count`. The frontend doesn't check the response status |
 
 **Import details** (`catalogue_parser.py`):
@@ -102,6 +104,8 @@ The dashboard is one client component, `frontend/app/page.js` (4,546 lines). Tab
 - Response: `ImportSummaryResponse` with created/updated/failed counts and row errors and warnings (`backend/app/schemas/import_export.py`). The dashboard toast shows created/updated/failed/warning counts and the first three row errors; it is an error when nothing was imported and a warning when some rows failed (`handleFileUpload`).
 
 ### 3.2 AI Drafts & Review tab (`page.js:1917`)
+
+Each product has one draft per marketplace, and the editor only ever shows the chosen marketplace's draft. Switching marketplace opens that product's draft there, including right after page load, when the first draft opened on its own. With no draft on that marketplace, the editor is empty and Save and Approve are disabled until one is generated.
 
 | Button / action | Handler | API call |
 | --- | --- | --- |
@@ -123,6 +127,8 @@ The dashboard is one client component, `frontend/app/page.js` (4,546 lines). Tab
 **Edit** (`drafts.py:285-321`): applies changed fields, re-runs the rules, sets `is_approved=false`, `status=draft`.
 
 **Approve** (`drafts.py`, `approve_draft`): re-runs the rules against the product as it is now (its data or Meesho category may have changed since the draft was checked) and stores the result; any error returns 400 naming the errors (up to five), otherwise the draft is `approved`.
+
+**Editor safety** (`page.js`): the editor remembers which draft its text belongs to (`editDraftId`), and saving (also the save that approving does first) is refused while it still holds another draft's text. When a save, approve or reject finishes, the result replaces the open draft only if the seller hasn't moved to another product meanwhile. Before this (found 3 Nov 2026 by approving quickly down the list) a slow approval could flip the editor back and write one product's copy into another product's draft. **Compliance checks** (`components/RuleChecks.jsx`) list the draft's real rule results from the backend, every error (blocks approval) and warning with its message; it replaced a hard-coded list of three passing checks that never reflected the results.
 
 **Reject** (`drafts.py:347-364`): `status=draft`, `is_approved=false`, stores `rejection_reason`.
 
@@ -230,7 +236,7 @@ Deterministic. Title = brand + name + colour/material/size (skipping parts alrea
 
 ## 5. Rule engine
 
-File: `backend/app/services/rule_engine.py`, `RuleEngine.evaluate(product, draft, marketplace)`. It runs on single generate, batch generate, edit, approve (against the product's current data), after saving Meesho fields (`PUT /drafts/meesho/missing-fields`), and as a pre-check in `GET /drafts/product/{id}` when no draft exists (that pre-check always uses Amazon rules).
+File: `backend/app/services/rule_engine.py`, `RuleEngine.evaluate(product, draft, marketplace)`. It runs on single generate, batch generate, edit, approve (against the product's current data), after saving Meesho fields (`PUT /drafts/meesho/missing-fields`), and as a pre-check in `GET /drafts/product/{id}` when no draft exists (using the requested marketplace's rules).
 
 | # | Check | Amazon | Flipkart | Meesho | Code |
 | --- | --- | --- | --- | --- | --- |
@@ -243,7 +249,7 @@ File: `backend/app/services/rule_engine.py`, `RuleEngine.evaluate(product, draft
 | 7 | Banned claim in title, bullets or description (whole-word regex, case-insensitive; one hit per block reported) | error | error | error | `:153-172` |
 | 8 | HTML tag in description | — | — | error | `:175-181` |
 | 9 | Bullets | < 5 warning | < 3 warning | < 3 warning | `:184-201` |
-| 10 | Words Meesho QC flags (care, comfort, colors) in title, bullets or description | — | — | error | `meesho_flagged_word` |
+| 10 | Words Meesho QC flags in title, bullets or description (`MEESHO_FLAGGED_WORDS`: care, comfort, colors, and maroon, lotus, an, drop, which Meesho matched to brands on its list and held as "Brand/illegal keywords", 3 Nov 2026) | — | — | error | `meesho_flagged_word` |
 | 11 | Title with a weight, dimension, price or another marketplace's name (`PRODUCT_NAME_RULES`) | — | — | error | `title` |
 | 12 | Facts the data doesn't state (`copy_fact_issues`): a number (so conversions too), a claim (`CLAIM_TERMS`: 100%, pure, handmade, machine wash, warranty…) or one of the Meesho template's own option words (fabrics, colours, patterns… from `MeeshoAdapter.fact_vocabulary`; an option counts as stated when the data has all its words) | — | — | error | `unsupported_fact` |
 | 13 | Praise the data doesn't use (`PUFFERY_TERMS`: premium, luxury, durable, best, perfect…) | — | — | warning | `puffery` |
@@ -338,13 +344,15 @@ If an attribute "Parent SKU" exists, child-variation fields with theme `COLOR_NA
 | Care Instructions, Ideal For, Ideal Season, Occassion Type, Quality, Type (Bedsheets 12776) | attributes with the column's name only; nothing in the product data implies them |
 | Pillow length/width; no. of pillow covers | the "A x B in" and the "N pillow" in the Included text |
 | Images 1–4 | product `images[0..3]` as stored |
-| Style ID / SKU ID / Brand Name / Group ID | Style Code/ID attribute else SKU / SKU / product brand / Group ID attribute |
+| Style ID / SKU ID / Brand Name / Group ID | Style Code/ID attribute else SKU / SKU / product brand / the seller's Group ID, else one per product (`_group_ids`): each Style ID gets the next unused option in order (`Group 01`, `Group 02`…; 1, 2… when free text), so size variants share a group and different products never do. Meesho treats rows sharing a Group ID as one catalog and as sizes of one product: five bedsheets sent with Group ID 1 were rejected (30 Oct 2026) |
 
 **Dropdown columns** (`_match_dropdown_option`) take only high-confidence matches, returned with the template's exact spelling: exact (case-insensitive) → same number, with or without a unit ("180 TC" → "180") → exactly one option named as a whole word in the value ("100% cotton" → "Cotton", "90 x 100 in (double)" → "Double"; longest option wins, so "Navy Blue" beats "Blue"). Brand, HSN, GST, country, Group ID and colour accept only exact or numeric matches, so "Indigo and white" is not turned into "White" and Brand is never picked.
 
 **Problems** are collected per SKU: a compulsory column (row-2 "* Compulsory Field" marker) left empty, a value that isn't a template option, or several designs sharing one Product Name (Meesho merges them as sizes of one product and rejects the rows; distinct sizes of one Style ID may share a name). Any compulsory problem raises `MeeshoExportIncomplete`; non-compulsory ones (e.g. a brand not on Meesho's list) leave the cell empty and don't block. **Upload rules** (`_upload_rule_problems`, `:733`), all blocking: the product's Meesho draft must exist and be **approved**; Product Name at most **100 characters** and free of a weight (`750 gm`), a dimension (`90 x 100`, `10 inch`), a price (`₹499`) or another marketplace's name (`PRODUCT_NAME_RULES`; bare units that are also words or model names, like `2 in 1`, `5G`, `3M`, aren't matched); no word Meesho's QC flags (`MEESHO_FLAGGED_WORDS`) in the title, description or bullets; **Meesho Price lower than MRP** and a Wrong/Defective discount below the Meesho Price (the template's own rules); every image link a web link that isn't Google Drive, a stock-photo site or a local address (`UNUSABLE_IMAGE_LINKS`). Links to the seller's own storage are allowed: Meesho accepted a Supabase Storage signed link (3 Nov 2026).
 
 `GET /drafts/meesho/export` (`drafts.py:660`) takes the upload's `product_ids` (else a `category`, else every product; an id that doesn't exist is a 404, never dropped) and answers **422** with `detail: {message, problems: [{sku, category, field, reason, blocking}]}` instead of a file when anything blocks. A successful export marks each product's Meesho draft `exported` (never `live`) and records the time in `last_sync_at`. `GET /drafts/meesho/readiness?product_ids=` (`:687`) returns each product's Meesho category, `ready`, and its blocking problems, checked together as the upload would be; all products when no ids are given.
+
+**Processed-file import** (`POST /drafts/meesho/processed-file`, `MeeshoAdapter.parse_processed_file`, `components/MeeshoQcImport.jsx` in the Meesho Upload panel): the seller uploads the error or warning file downloaded from the supplier panel (.xlsx, at most 10 MB, read-only and values only). For each SKU with an ERROR STATUS or MESSAGE, its Meesho draft goes back to unapproved with `rejection_reason` = "Meesho QC: <message>" and its checks rerun; the words Meesho flagged ("maroon(Warning)") are learned into the settings (`meesho_learned_flagged_words`) and join `MEESHO_FLAGGED_WORDS` everywhere (`MeeshoAdapter.flagged_words()`: the prompt, the copy check and the export gate). Unknown SKUs are reported, never dropped; an unreadable file changes nothing (422). Readiness shows each product's `qc_reason`; the editor shows it as "Rejected last time"; approving clears it. "Pick the N failed product(s)" selects them for the corrected export, uploaded with "Upload New File" on the same row. **Upload checklist:** every export zip carries `UPLOAD_CHECKLIST.txt`: per file the exact category path (and template id) to pick in the supplier panel and its SKUs, then the QC-error loop.
 
 **Fill-in sheet** (`build_fill_in_sheet`, `GET /drafts/meesho/fill-in-sheet?product_ids=` or `?category=`): a workbook with a "Fill in" sheet (SKU, name, category, one column per blocking field using the template's own column names, highlighted where that SKU needs it, plus the current image links, with Image 1 highlighted when it is missing), Excel dropdowns with the template's exact options ("Allowed values"), "What's wrong" (every problem) and "How to use". A product without a Meesho category gets a **Meesho Category** column, with every category's breadcrumb as its dropdown, so the sheet is produced even when that is the only gap. Importing it in the Catalogue tab stores the values as attributes, which the export then reads. The Meesho Upload panel downloads it for the not-ready products on request; blockers a cell can't fix (approval, Product Name, image links) are listed under "What's wrong".
 
@@ -378,8 +386,8 @@ There are **no local fallbacks**. When a request fails or the backend answers no
 | Data | Location | Notes |
 | --- | --- | --- |
 | Products, drafts | Supabase Postgres (`DATABASE_URL`) | The only database (§2) |
-| Uploaded photos | `backend/uploads/` | URLs stored as `http://localhost:8000/static/uploads/...` |
-| Brand voice, banned claims, credentials, last-sync | `backend/app/data/dynamic_settings.json` | Gitignored; plain text; global (no workspace) |
+| Product photos | Supabase Storage bucket `SUPABASE_STORAGE_BUCKET` (private; signed links on the product) | Written only by the backend with `SUPABASE_SERVICE_KEY`; the key never reaches the browser |
+| Brand voice, banned claims, seller ID, Meesho category defaults, learned Meesho flagged words, last-sync | `backend/app/data/dynamic_settings.json` | Gitignored; plain JSON; global (no workspace). Secret credentials are never written here: `PUT /settings/credentials` refuses them (422) and names the `.env` variable to set (`SECRET_CREDENTIAL_ENV`) |
 | Cached Amazon schemas | `backend/app/data/ptd_schemas/` | Only written by `fetch_live_ptd_schema`, which is unused |
 | Meesho master templates | `docs/meesho/Meesho Templates/<category path>/*.xlsx` | Read-only; copies are filled in memory |
 | Meesho category tree | `docs/meesho/categories/meeshoCategories.json` | Used for search and template matching |
@@ -392,7 +400,13 @@ There are **no local fallbacks**. When a request fails or the backend answers no
 
 There are no `workspace_id` / `user_id` columns, no audit table, and no rejection history.
 
-**Seed data** (`backend/app/seeds/seed_pilot_data.py`): `PILOT_PRODUCTS` has 19 hand-written Gulmohar Home SKUs (Bedsheets 5, Pooja items 5, Kurtas 3, Planters 2, Ethnic footwear 2, Quilts 2) with Unsplash image URLs. `seed_database()` only **adds SKUs that don't exist yet** and never changes stored products; the database is the source of truth. It no longer generates placeholder variants.
+**Seed data** (`backend/app/seeds/seed_pilot_data.py`): `PILOT_PRODUCTS` has 19 Gulmohar Home SKUs (Bedsheets 5, Pooja items 5, Kurtas 3, Planters 2, Ethnic footwear 2, Quilts 2). They are **demo values written to look real**, complete for each product's Meesho template: every compulsory field passes the export's checks (the `meesho` block of each product, saved as `Meesho <column>` attributes). Photos are signed links (5-year expiry) to `SKU_1.jpg` files in the seller's Supabase product-images bucket (`PRODUCT_IMAGES`). On 3 Nov 2026 these are **free-licence Unsplash stand-ins** (local copies in `assets/product-images/`), uploaded to test the workflow; they aren't photos of these products and must be replaced with the seller's own before a real upload. `seed_database()` only **adds SKUs that don't exist yet** and never changes stored products; the database is the source of truth. **`--replace`** deletes these 19 SKUs and their drafts (no other product), seeds them again, and sets Settings > Seller Details (`SELLER_DETAILS`, demo legal details) and the Meesho category defaults (`MEESHO_CATEGORY_DEFAULTS`: Bedsheets 12776, Pooja items 12811, Kurtas 10004, Planters 13367, Quilts 15875). The men's kurta (10149), the two diyas (13323) and both footwear products (12413, 12435) carry their own `Meesho Category`. Replace the demo values with the seller's own before a real upload. Reseeded on 3 Nov 2026, then run through the seller workflow in the app: Meesho drafts generated by AI (all 19 passed the fact check), approved, and exported (all 19 ready; one zip with 9 template files, one per Meesho category), so the drafts are `exported`.
+
+**First real QC run (3 Nov 2026)**, supplier panel, Bedsheets (12776), 5 seed products: upload v2 passed QC for 2 and held 3 for "Brand/illegal keywords" (maroon, lotus, an, drop in the AI copy); after adding those words to `MEESHO_FLAGGED_WORDS`, regenerating and approving the 3 drafts, the corrected file ("Upload New File" on the held row) passed QC 3/3. No QC errors once each product had its own Group ID. Files uploaded are kept in `assets/meesho-uploads/` (not committed).
+
+**Second run (3 Nov 2026), all remaining categories:** 14 products in 8 files (Diyas & Lanterns, Puja Articles, Kurtis, Men Kurtas, Planter, Men and Women Mojaris/Juttis, Quilts), uploaded per `UPLOAD_CHECKLIST.txt`. 13 passed QC on the first upload; BRS-221 was held for "borosilicate" (matched to the brand Borosil). Its warning file was imported in ListingPilot (Meesho Upload > Import error / warning file), which unapproved the draft and learned the word; the regenerated, approved copy passed QC on "Upload New File". **All 19 pilot products have passed Meesho QC** at file level; see the next paragraph for what the inventory showed on 4 Nov.
+
+**Re-upload check (4 Nov 2026):** the Diyas & Lanterns file was uploaded again (14:57) with BRS-220 and BRS-221 and came back QC Error on 2/2 catalogs: "This product has been deactivated as it duplicates an existing Meesho product ID." BRS-221's name and description had changed since the accepted upload, so **rewording copy doesn't clear it**; the price, SKU and image were the same, and which of those Meesho matches on is unknown. This error has **no error file**: the row offers "View Catalog Errors", not "Download Error File", and the reason shows only in Inventory, so `POST /drafts/meesho/processed-file` never sees it. ListingPilot doesn't know which SKUs are already on Meesho (readiness says Ready and export allows them), so don't re-upload an accepted SKU. Inventory the same day: 15 of 19 were Active and have since been **paused** so the demo listings can't be ordered (pausing sets stock to 0, so resuming means entering stock again). KRT-312, BLU-416 and MJR-521 are "under QC, expect an action within 48 hours" although their files show QC Pass, and QLT-611 is "Blocked: Please contact supplier support". Those four aren't found by a SKU search, only by catalog ID, and they have no Pause action, so the three under QC could still go live on their own.
 
 ---
 
@@ -428,7 +442,8 @@ Read by `backend/app/core/config.py` from the root `.env`. Template: `.env.examp
 ```powershell
 # repo root
 .venv\Scripts\python.exe -m pip install -r backend/requirements.txt
-.venv\Scripts\python.exe backend/app/seeds/seed_pilot_data.py
+.venv\Scripts\python.exe backend/app/seeds/seed_pilot_data.py             # adds missing seed SKUs only
+.venv\Scripts\python.exe backend/app/seeds/seed_pilot_data.py --replace   # deletes and reseeds them, sets Seller Details and Meesho category defaults
 .venv\Scripts\python.exe -m uvicorn app.main:app --app-dir backend --reload --port 8000
 #   Swagger: http://127.0.0.1:8000/api/v1/docs   ReDoc: /api/v1/redoc
 
@@ -443,7 +458,7 @@ cd frontend; npm install; npm run dev        # http://localhost:3000
 
 `pytest.ini` sets `pythonpath = backend`, `testpaths = backend/tests`.
 
-**Test setup** (`backend/tests/conftest.py`): points `LISTINGPILOT_SETTINGS_FILE` at a temporary file. The database is **`TEST_DATABASE_URL`** (`listingpilot_test` on the Supabase instance); the run stops if it's unset, not Postgres, the same database as `DATABASE_URL` (same user, host, port and database name — Supabase pooler hosts are shared across projects), or unreachable. Each run drops and recreates the tables, then seeds the pilot products plus 40 extras. `get_db` is overridden and `SessionLocal` rebound to the test branch, so nothing in a test can reach the app database. Groq/OpenRouter/Anthropic keys are blanked, so no test calls a real AI provider; provider tests use fake keys and mocked `httpx`.
+**Test setup** (`backend/tests/conftest.py`): points `LISTINGPILOT_SETTINGS_FILE` at a temporary file. The database is **`TEST_DATABASE_URL`** (`listingpilot_test` on the Supabase instance); the run stops if it's unset, not Postgres, the same database as `DATABASE_URL` (same user, host, port and database name — Supabase pooler hosts are shared across projects), or unreachable. Each run drops and recreates the tables, then seeds the pilot products (each given five example photo links, so tests never depend on the seller's bucket) plus 40 extras. `get_db` is overridden and `SessionLocal` rebound to the test branch, so nothing in a test can reach the app database. Groq/OpenRouter/Anthropic keys are blanked, so no test calls a real AI provider; provider tests use fake keys and mocked `httpx`.
 
 | File | Tests | Covers |
 | --- | --- | --- |
@@ -453,11 +468,12 @@ cd frontend; npm install; npm run dev        # http://localhost:3000
 | `test_ai_groq.py` | 14 (16 cases) | Groq provider, rate-limit cooldown and waits, generation source, normalising incomplete model output, rejecting a reply with the description in the bullets, prompt asking for 90 % of each marketplace's limits, template-copy titles within the Amazon limit |
 | `test_phase2_endpoints.py` | 6 | Amazon publish/payloads, status grid, reports |
 | `test_phase3_endpoints.py` | 9 | Flipkart stub, Meesho templates/export refusal/dropdowns |
-| `test_meesho_export.py` | 64 (114 cases) | Meesho values from product data only, `Meesho <column>` values for any template, size and weight columns from one stated measurement, high-confidence dropdown matching, whole-word template matching, name matches only suggest, audience-aware suggestions, template ids and real names (incl. '/'), category defaults and product choice, taxonomy and category-default endpoints, all-or-nothing export, drafts marked exported, readiness and selection endpoints, approval re-checked against current data, title length, Product Name, flagged-word, price and image-link rules (own storage allowed), the copy fact check (numbers, claims, template option words, praise), Meesho prompt from template and data, regeneration (at most 2), template copy without claims, template-required fields, Meesho Category from fill-in sheet and endpoint, lazy template loading, one zip file per template, exact Fabric/Pattern columns, fill-in sheet, 422 endpoint, case-insensitive required attributes |
+| `test_meesho_export.py` | 73 (127 cases) | Meesho values from product data only, `Meesho <column>` values for any template, size and weight columns from one stated measurement, one Group ID per product, high-confidence dropdown matching, whole-word template matching, name matches only suggest, audience-aware suggestions, template ids and real names (incl. '/'), category defaults and product choice, taxonomy and category-default endpoints, all-or-nothing export with upload checklist, drafts marked exported, readiness and selection endpoints, approval re-checked against current data, title length, Product Name, flagged-word (incl. brand matches), price and image-link rules, copy fact check, copy style (no notes about searching, English letters), Meesho prompt, regeneration, template copy, template-required fields, processed-file parsing and import (failed drafts, learned words, unknown SKUs, unreadable files), Meesho Category from fill-in sheet and endpoint, lazy template loading, fill-in sheet, 422 endpoint |
 | `test_no_invented_data.py` | 8 | Exact header matching, no invented MRP/images, seed never overwrites, Meesho publish refused, AI and Amazon Legal Metrology from attributes only (not from draft specs) |
-| `test_phase4_endpoints.py` | 5 | Brand voice, banned claims, credential masking, health |
+| `test_phase4_endpoints.py` | 7 | Brand voice, banned claims, secret credentials refused (not stored unencrypted), seller ID saved, health |
+| `test_photo_storage.py` | 6 (10 cases) | Photos stored through the backend with a signed link, JPEG/PNG by content only, 10 MB limit, failing loudly when storage is unconfigured, unreachable or refuses |
 | `test_celery_tasks.py` | 4 | Task registration, generate dispatch, status |
-| **Total** | **129** (181 cases) | |
+| **Total** | **145** (209 cases) | |
 
 Not covered: the batch-publish task, live Amazon/Flipkart paths, the OpenRouter cascade, and the whole frontend.
 
@@ -476,7 +492,7 @@ Base URL `http://127.0.0.1:8000/api/v1` (no authentication). Routers are wired i
 | Method | Path | Notes |
 | --- | --- | --- |
 | GET | `/catalogue/categories` | Distinct categories (route declared twice, `:25` and `:215`; the first wins) |
-| POST | `/catalogue/upload-image` | Multipart image → `{url, filename}` |
+| POST | `/catalogue/upload-image` | Multipart JPEG/PNG + `sku` → `{url}` (signed storage link); 422 / 503 |
 | GET | `/catalogue/template` | Master template `.xlsx` |
 | POST | `/catalogue/import` | Multipart file → `ImportSummaryResponse` |
 | GET | `/catalogue/export?format=xlsx\|csv\|json&category=&search=` | File download |
@@ -493,7 +509,7 @@ Base URL `http://127.0.0.1:8000/api/v1` (no authentication). Routers are wired i
 | POST | `/drafts/tasks/generate-batch?marketplace=&category=&overwrite=&tenant_id=` | `:195`; Celery |
 | GET | `/drafts/tasks/{task_id}` | `:221` |
 | POST | `/drafts/tasks/publish-batch?marketplace=&tenant_id=` (body: `[draft_id…]`) | `:229`; broken (§8) |
-| GET | `/drafts/product/{product_id}?marketplace=` | `:254`; draft or Amazon pre-check |
+| GET | `/drafts/product/{product_id}?marketplace=` | `:254`; draft, or a pre-check for that marketplace |
 | PUT | `/drafts/{id}` | `:285` |
 | POST | `/drafts/{id}/approve` | `:324` |
 | POST | `/drafts/{id}/reject` (body `{reason}`) | `:347` |
@@ -504,6 +520,8 @@ Base URL `http://127.0.0.1:8000/api/v1` (no authentication). Routers are wired i
 | GET | `/drafts/meesho/export?product_ids=&category=&as_zip=` | `:660` |
 | GET | `/drafts/meesho/readiness?product_ids=` | `:687` |
 | GET | `/drafts/meesho/fill-in-sheet?product_ids=&category=` | `:715` |
+| GET | `/drafts/meesho/category-fields/{template_id}` | Fields the Add Product form asks for a category |
+| POST | `/catalogue/discard-images` | Removes recent, unused uploads for a product that wasn't added |
 | GET | `/drafts/meesho/taxonomy` | `:771` |
 | GET, PUT | `/drafts/meesho/category-defaults` | `:802` |
 | GET | `/drafts/meesho/templates` | `:621` |
@@ -528,7 +546,7 @@ Base URL `http://127.0.0.1:8000/api/v1` (no authentication). Routers are wired i
 | GET / PUT | `/settings/credentials` (`:77`, `:83`) |
 | GET | `/settings/system-health` (`:90`) |
 
-Also `GET /` (banner) and `/static/uploads/*` outside `/api/v1`.
+Also `GET /` (banner) outside `/api/v1`. The server serves no files.
 
 ---
 
@@ -543,21 +561,21 @@ Also `GET /` (banner) and `/static/uploads/*` outside `/api/v1`.
 
 **Against current marketplace rules**
 - Amazon Item Highlights (≤ 125 characters) are not modelled; the 75-character title limit is.
-- Meesho image cells carry local/Unsplash URLs; Meesho needs links from its own uploader.
+- Meesho image cells take any web link that isn't Drive, stock or local; signed links to the seller's bucket passed Meesho QC (3 Nov 2026).
 - Rule-engine required attributes come from 6 hard-coded categories; the Meesho export itself now uses the template's compulsory markers.
 
 **Broken or unused paths**
 - Celery batch publish fails for every draft (`batch_tasks.py:243-247`).
 - `fetch_live_ptd_schema` is never called.
-- Uploaded photo URLs are hard-coded to `localhost:8000` (`catalogue.py:53`).
+- **Database exposure (checked 3 Nov 2026):** `products` and `listing_drafts` have RLS off, and the `anon` and `authenticated` roles can select, insert, update and delete them through Supabase's Data API. Anyone with the project's anon key could read or change the catalogue. ListingPilot doesn't ship that key, but the fix (enable RLS with no policies, AGENTS.md 5.3) needs Alembic, which isn't set up.
 
 **Missing**
 - Amazon: status polling / real ASIN, price/stock update, GTIN search, validation preview.
 - Flipkart: any live call; Settings credentials.
-- Meesho: no pilot category has a Meesho category chosen yet (Admin & Settings → Meesho Categories); photo intake to storage; upload checklist; processed-file import. Choosing a category default doesn't re-check existing Meesho drafts: regenerate them (the prompt needs the category anyway) or approve, which re-checks.
+- Meesho: the pilot data is demo data (see Seed data); photo intake is a single photo upload or link at a time (no bulk); the live bedsheet listings' copy predates the copy-style check.
 - Import screen doesn't show row errors.
 - Rule limits and required attributes not editable.
-- No workspaces/users, audit log, Setup wizard, encrypted credentials, migrations, login.
+- No workspaces/users, audit log, Setup wizard, login (out of scope). No Alembic migrations yet; no encrypted credential store (secrets stay in `.env`, the settings form refuses them).
 
 **Engineering**
 - One 4,546-line page component; `print` logging; no CI; no frontend tests; product `category` is free text.

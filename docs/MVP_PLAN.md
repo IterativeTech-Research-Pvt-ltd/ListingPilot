@@ -53,7 +53,7 @@ AI image generation, Shipping Optimiser, returns advisor, full Product Flags eng
 | --------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | 3 Nov     | **Done 3 Nov:** Meesho category picker (template id, breadcrumb, category defaults); storage decision (Supabase Storage)     |
 | 4 Nov     | **Done 3 Nov:** upload selection, readiness per product, all-or-nothing export gate; Meesho copy from the template and data with a fact check and up to 2 regenerations; size/weight columns for any template; `Meesho <column>` values; drafts marked "exported" |
-| 4–5 Nov   | Photo intake (link or file → storage), JPEG/RGB image ZIP, link paste-back, upload checklist                                 |
+| 4–5 Nov   | **Done 3 Nov:** photo intake (link or JPEG/PNG upload → storage, signed links; Meesho accepts them, so no image ZIP or paste-back), upload checklist; processed-file import; QC passed for all pilot categories |
 | 5 Nov     | Seller: Seller Details, real attributes and photos, Meesho categories; regenerate and approve Meesho drafts                  |
 | 6 Nov     | MILESTONE first real Meesho upload (at least 5 products)                                                                     |
 | 7–10 Nov  | Processed-file import + correction sheet (checked against the 6 Nov file); end-to-end test of every pilot template           |
@@ -70,6 +70,6 @@ Honest UI > Meesho accepted > everything else.
 
 - [ ] No screen shows success for a failed action; no fake ASIN/FSN/Meesho IDs
 - [ ] Real pilot catalogue in production DB with Legal Metrology fields complete
-- [ ] Meesho: every pilot category uploaded and accepted (or rejections imported and fixed)
-- [ ] Meesho export refuses anything incomplete; processed-file errors come back to the drafts
+- [x] Meesho: every pilot category uploaded and accepted (or rejections imported and fixed) — 3 Nov 2026, all 19 demo products in 9 categories passed QC; one rejection imported and fixed
+- [x] Meesho export refuses anything incomplete; processed-file errors come back to the drafts
 - [ ] Credentials encrypted; migrations with workspace_id/user_id; tests passing
