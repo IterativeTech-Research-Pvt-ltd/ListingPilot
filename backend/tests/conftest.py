@@ -53,7 +53,7 @@ app.dependency_overrides[get_db] = override_get_db
 # No test may call a real AI provider: without keys generation uses the built-in generator.
 # Tests of a provider set their own fake key and mock httpx (see test_ai_groq.py).
 # Photo storage likewise: tests mock httpx (see test_photo_storage.py), never the real bucket.
-for _key in ("GROQ_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "SUPABASE_SERVICE_KEY"):
+for _key in ("GROQ_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "SUPABASE_SERVICE_KEY", "CLOUDFLARE_AI_TOKEN"):
     setattr(settings, _key, "")
 
 from app.seeds.seed_pilot_data import PILOT_PRODUCTS

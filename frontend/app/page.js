@@ -6,7 +6,7 @@ import MeeshoRequiredFields from "./components/MeeshoRequiredFields";
 import SellerDetailsCard from "./components/SellerDetailsCard";
 import MeeshoCategoryDefaults from "./components/MeeshoCategoryDefaults";
 import MeeshoUploadPanel from "./components/MeeshoUploadPanel";
-import ProductImagesField, { discardUploadedImages } from "./components/ProductImagesField";
+import ProductImagesField, { discardUploadedImages, isGeneratedImage, GenerateForProduct } from "./components/ProductImagesField";
 import DeleteProductDialog from "./components/DeleteProductDialog";
 import MeeshoCategoryFields, { EMPTY_MEESHO_CHOICE, meeshoChoiceAttributes, meeshoChoiceIssues } from "./components/MeeshoCategoryFields";
 import RuleChecks from "./components/RuleChecks";
@@ -580,8 +580,9 @@ export default function ListingPilotPhase3App() {
 
   // Saves the product's photo list and shows the server's copy; throws when the server didn't save it,
   // so no caller reports a photo change that didn't happen
-  const saveProductImageChanges = async (newImages) => {
-    const base = drawerProduct || selectedProduct;
+  // `product` pins the save to one product, for work that finishes after the seller may have opened another
+  const saveProductImageChanges = async (newImages, product) => {
+    const base = product || drawerProduct || selectedProduct;
     if (!base) throw new Error("No product selected.");
     const res = await fetch(`${API_BASE}/catalogue/products/${base.id}`, {
       method: "PUT",
@@ -933,6 +934,10 @@ export default function ListingPilotPhase3App() {
   const handleAddProduct = async () => {
     if (!newForm.sku.trim() || !newForm.name.trim() || !(parseFloat(newForm.price) > 0)) {
       showToast("Required Fields Missing", "Please provide SKU, Product Name and a selling price.", "warn");
+      return;
+    }
+    if (newImages[0]?.generated) {
+      showToast("Real Photo Needed", "The front photo must be a real photo of the product. Add one, or remove the AI images.", "warn");
       return;
     }
     const { invalid, missing } = meeshoChoiceIssues(newMeeshoChoice);
@@ -1449,7 +1454,7 @@ export default function ListingPilotPhase3App() {
                           </td>
                           <td>
                             <span style={{ fontSize: "0.8rem", color: (p.image_count || p.images?.length || 0) >= 3 ? "var(--good)" : "var(--warn)" }}>
-                              📷 {p.image_count || p.images?.length || 1} photos
+                              📷 {p.image_count || p.images?.length || 0} {(p.image_count || p.images?.length || 0) === 1 ? "photo" : "photos"}
                             </span>
                           </td>
                           <td>
@@ -3354,7 +3359,7 @@ export default function ListingPilotPhase3App() {
                       onChange={(e) => setEditProductForm({ ...editProductForm, mrp: e.target.value })}
                     />
                   ) : (
-                    <span className="price-val mrp">₹{drawerProduct.mrp?.toLocaleString?.() || drawerProduct.mrp || "—"}</span>
+                    <span className="price-val mrp">{drawerProduct.mrp ? `₹${drawerProduct.mrp.toLocaleString()}` : "—"}</span>
                   )}
                 </div>
                 <div className="drawer-price-item">
@@ -3416,7 +3421,16 @@ export default function ListingPilotPhase3App() {
                           className="photo-manager-thumb"
                           onError={(e) => { e.currentTarget.src = "https://placehold.co/100x100?text=No+Photo"; }}
                         />
-                        {idx === 0 ? (
+                        {isGeneratedImage(imgUrl) ? (
+                          // Meesho's front photo must be a real one, so an AI image never gets "Set #1"
+                          <span
+                            className="photo-primary-badge"
+                            style={{ background: idx === 0 ? "rgba(194, 56, 43, 0.9)" : "rgba(0, 0, 0, 0.65)" }}
+                            title={idx === 0 ? "Meesho's front photo must be a real photo. Set a real photo as #1." : "AI-generated. Compare it with the real product."}
+                          >
+                            {idx === 0 ? "AI · can't be #1" : "AI-generated"}
+                          </span>
+                        ) : idx === 0 ? (
                           <span className="photo-primary-badge">★ Primary</span>
                         ) : (
                           <button 
@@ -3484,6 +3498,12 @@ export default function ListingPilotPhase3App() {
                     </button>
                   </div>
                 </div>
+                <GenerateForProduct
+                  key={drawerProduct.id}
+                  product={drawerProduct}
+                  onSave={images => saveProductImageChanges(images, drawerProduct)}
+                  notify={showToast}
+                />
               </div>
 
               {/* Product Details & Specifications */}
@@ -3898,6 +3918,17 @@ export default function ListingPilotPhase3App() {
                 sku={newForm.sku.trim().toUpperCase()}
                 onBusyChange={setIsNewImageBusy}
                 saving={isSavingNewProduct}
+                facts={{
+                  name: newForm.name,
+                  category: newMeeshoChoice.breadcrumb || newForm.category,
+                  details: [
+                    newForm.material && `Material: ${newForm.material}`,
+                    newForm.size && `Size: ${newForm.size}`,
+                    ...Object.entries(meeshoChoiceAttributes(newMeeshoChoice))
+                      .filter(([key]) => key !== "Meesho Category")
+                      .map(([key, value]) => `${key.replace(/^Meesho /, "")}: ${value}`),
+                  ].filter(Boolean).join("; "),
+                }}
               />
 
               <div className="draft-field">
@@ -3915,7 +3946,7 @@ export default function ListingPilotPhase3App() {
             <div className="modal-footer">
               <button className="btn" onClick={closeAddModal} disabled={isNewImageBusy || isSavingNewProduct}>Cancel</button>
               <button className="btn btn-primary" onClick={handleAddProduct} disabled={isNewImageBusy || isSavingNewProduct}>
-                {isSavingNewProduct ? "Saving…" : isNewImageBusy ? "Uploading photo…" : "Save Product"}
+                {isSavingNewProduct ? "Saving…" : isNewImageBusy ? "Wait for photos…" : "Save Product"}
               </button>
             </div>
           </div>

@@ -1,3 +1,4 @@
+import base64
 import json
 import time
 import asyncio
@@ -24,6 +25,21 @@ OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 # Tried after GROQ_MODEL, in order, before the built-in generator
 GROQ_FALLBACK_MODELS = ["qwen/qwen3.8-27b", "openai/gpt-oss-20b"]
+CLOUDFLARE_AI_URL = "https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/{model}"
+# One scene per generated photo, so a product's images aren't near-copies (Meesho rejects duplicates)
+IMAGE_SCENES = (
+    "Show it in the room or place where it is normally used, in soft daylight.",
+    "Show it on a plain light surface with a clean, uncluttered background.",
+    "Show a closer view of it in a simple, bright setting.",
+)
+IMAGE_RULES = (
+    "Use the exact product from the input image. Keep its shape, colour, pattern, finish, proportions and "
+    "item count exactly as they are. Do not add or remove any part of it. No text, no logos, no watermark, "
+    "no people, no other products."
+)
+MAX_IMAGE_NAME_CHARS = 200
+MAX_IMAGE_DETAILS_CHARS = 600
+MAX_IMAGE_NOTE_CHARS = 200
 # gpt-oss models reason before answering; "low" halves output tokens (stretches free-tier
 # per-minute limits) with no loss in listing quality. Other models reject the parameter.
 GROQ_REASONING_EFFORT_PREFIX = "openai/gpt-oss"
@@ -110,6 +126,14 @@ Output must be STRICTLY valid JSON with no conversational text or markdown code 
     }}
   }}
 }}"""
+
+class ImageGenerationFailed(RuntimeError):
+    """No image was made; the message says why and `status` is the HTTP status to answer with."""
+
+    def __init__(self, message: str, status: int):
+        super().__init__(message)
+        self.status = status
+
 
 class AIService:
     """Generates marketplace listings using OpenRouter (free/low-cost) or Anthropic Claude API."""
@@ -483,6 +507,47 @@ Meesho rules:
         draft["technical_specs"] = specs
         draft["aplus_content"] = dict(draft.get("aplus_content") or {})
         return draft
+
+    @classmethod
+    def image_prompt(cls, name: str, category: str, details: str, note: str, slot: int) -> str:
+        """The prompt for one generated photo, from the seller's own data only; the photo shows the rest."""
+        scene = note.strip()[:MAX_IMAGE_NOTE_CHARS] or IMAGE_SCENES[slot % len(IMAGE_SCENES)]
+        facts = details.strip()[:MAX_IMAGE_DETAILS_CHARS]
+        product = f"Product: {name.strip()[:MAX_IMAGE_NAME_CHARS]} ({category.strip()[:MAX_IMAGE_NAME_CHARS]})."
+        product += f" {facts}" if facts else ""
+        return f"{product} {scene} {IMAGE_RULES}"
+
+    @classmethod
+    def generate_product_image(cls, photo: bytes, prompt: str) -> bytes:
+        """
+        One image from the seller's photo (under 512 x 512, Workers AI's input limit) through Cloudflare
+        Workers AI. There is no other provider to fall back to: a failure raises ImageGenerationFailed.
+        """
+        if not (settings.CLOUDFLARE_ACCOUNT_ID and settings.CLOUDFLARE_AI_TOKEN):
+            raise ImageGenerationFailed(
+                "Image generation isn't set up: add CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_AI_TOKEN to the backend .env.", 503)
+        url = CLOUDFLARE_AI_URL.format(account=settings.CLOUDFLARE_ACCOUNT_ID, model=settings.CLOUDFLARE_IMAGE_MODEL)
+        try:
+            with httpx.Client(timeout=120) as client:
+                res = client.post(
+                    url,
+                    headers={"Authorization": f"Bearer {settings.CLOUDFLARE_AI_TOKEN}"},
+                    data={"prompt": prompt, "width": "1024", "height": "1024"},
+                    files={"input_image_0": ("photo.jpg", photo, "image/jpeg")},
+                )
+        except httpx.RequestError as e:
+            raise ImageGenerationFailed(f"Couldn't reach Cloudflare: {e.__class__.__name__}. Try again.", 503)
+        # 429 (code 4006) is the free daily limit; Cloudflare sometimes sends it while quota remains, hence "says"
+        if res.status_code == 429:
+            raise ImageGenerationFailed(
+                "Cloudflare says today's free image limit is used up. It resets at 5:30 am IST.", 503)
+        if res.status_code >= 300:
+            print(f"[AIService] Image generation failed: HTTP {res.status_code} {res.text[:200]!r}", flush=True)
+            raise ImageGenerationFailed(f"Cloudflare refused the request (HTTP {res.status_code}). Try again.", 502)
+        try:
+            return base64.b64decode(res.json()["result"]["image"], validate=True)
+        except (ValueError, KeyError, TypeError):  # bad JSON and bad base64 are both ValueErrors
+            raise ImageGenerationFailed("Cloudflare answered without a usable image. Try again.", 502)
 
     @classmethod
     def _rate_limit_cooldown(cls, res: httpx.Response) -> float:

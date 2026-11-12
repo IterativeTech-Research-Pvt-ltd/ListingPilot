@@ -4,6 +4,7 @@ from sqlalchemy import String, cast
 from sqlalchemy.orm import Session
 from typing import Optional, List
 import io
+import threading
 import urllib.parse
 
 from app.core.database import get_db
@@ -21,8 +22,14 @@ from app.services.template_generator import generate_master_catalogue_template
 from app.services.catalogue_parser import CatalogueParser
 from app.services.catalogue_exporter import CatalogueExporter
 from app.services import storage_service
+from app.services.ai_service import AIService, ImageGenerationFailed
 
 router = APIRouter()
+
+# The browser sends a JPEG under 512 x 512, far below this
+MAX_GENERATION_PHOTO_BYTES = 1_000_000
+# Each generation holds a worker for up to two minutes, so a burst mustn't starve the rest of the API
+_image_slots = threading.BoundedSemaphore(2)
 
 @router.get("/categories", response_model=List[str], summary="Get all distinct product categories (CAT-4)")
 def get_categories(db: Session = Depends(get_db)):
@@ -45,6 +52,44 @@ def upload_product_image(file: UploadFile = File(...), sku: str = Form("")):
         print(f"[Storage] Upload failed for {sku or 'product'}: {e}", flush=True)
         raise HTTPException(status_code=503, detail=f"Photo not saved: {e}")
     return {"url": url, "original_name": file.filename}
+
+@router.post("/generate-image", summary="Generate a product image from the seller's photo")
+def generate_product_image(
+    file: UploadFile = File(...), sku: str = Form(""), name: str = Form(""), category: str = Form(""),
+    details: str = Form(""), note: str = Form(""), slot: int = Form(0),
+):
+    """
+    Makes one image from a photo the browser has shrunk under 512 x 512, and stores it like an upload, marked
+    '_ai' after the time in its name. The seller reviews it before saving. 422 for a bad source, 502 or 503 when no image
+    was made, each with the reason.
+    """
+    if not name.strip():
+        raise HTTPException(status_code=422, detail="Enter the product name first; the image is made from it.")
+    photo = file.file.read(MAX_GENERATION_PHOTO_BYTES + 1)
+    if len(photo) > MAX_GENERATION_PHOTO_BYTES:
+        raise HTTPException(status_code=422, detail="The photo sent for generation is over 1 MB. Shrink it and try again.")
+    try:
+        storage_service.photo_type(photo)
+    except storage_service.PhotoRejected as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    prompt = AIService.image_prompt(name, category, details, note, slot)
+    if not _image_slots.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="Images are already being generated. Wait a moment and try again.")
+    try:
+        image = AIService.generate_product_image(photo, prompt)
+        storage_service.photo_type(image)
+    except ImageGenerationFailed as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+    except storage_service.PhotoRejected:
+        raise HTTPException(status_code=502, detail="Cloudflare answered without a usable image. Try again.")
+    finally:
+        _image_slots.release()
+    try:
+        return {"url": storage_service.upload_product_photo(image, sku, generated=True)}
+    except storage_service.StorageUnavailable as e:
+        print(f"[Storage] Generated image not stored for {sku or 'product'}: {e}", flush=True)
+        raise HTTPException(status_code=503, detail=f"Image not saved: {e}")
+
 
 @router.post("/discard-images", summary="Remove photos uploaded for a product that wasn't added")
 def discard_uploaded_images(urls: List[str] = Form(...), db: Session = Depends(get_db)):

@@ -1303,7 +1303,8 @@ tbody td {
   display: flex;
   align-items: center;
   gap: 12px;
-  z-index: 900;
+  /* Above .modal-overlay (1000): form warnings must be readable while the form is open */
+  z-index: 1100;
   animation: slideUp 300ms cubic-bezier(0.16, 1, 0.3, 1);
   max-width: 420px;
 }

@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_KEY: str = ""
     SUPABASE_STORAGE_BUCKET: str = "product-images"
 
+    # Image generation: Cloudflare Workers AI (backend only, like the other AI keys)
+    CLOUDFLARE_ACCOUNT_ID: str = ""
+    CLOUDFLARE_AI_TOKEN: str = ""
+    CLOUDFLARE_IMAGE_MODEL: str = "@cf/black-forest-labs/flux-2-klein-4b"
+
     # Brand details default
     DEFAULT_BRAND: str = "Gulmohar Home"
     

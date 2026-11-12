@@ -84,6 +84,10 @@ The dashboard is one client component, `frontend/app/page.js` (about 4,100 lines
 
 **Add Product** (top right of the dashboard) has an optional Meesho section (`components/MeeshoCategoryFields.jsx`). The seller picks the Meesho category, and the form lists that category's fields from `GET /drafts/meesho/category-fields/{template_id}` (`MeeshoAdapter.category_fields`): compulsory first, optional collapsed, with the template's exact options and Meesho's help text as a tooltip. Dropdowns of more than 50 options become a search box. Fields the form already has (`FORM_COVERED_COLUMNS`), Seller Details from Settings, and the Style and Group IDs the export sets aren't asked for. Filled values are sent in the same create request, as `Meesho <column>` attributes with `Meesho Category`, so a product is never half-saved. A value that isn't one of the options stops the save. Missing compulsory fields don't: the product is saved, the toast says how many remain, and the export gate still blocks it. Choosing another category clears the Meesho values. The create endpoint itself doesn't check Meesho values; the form and the export do. Its **Product Images** field (`components/ProductImagesField.jsx`) takes up to 4 photos, Meesho's image columns: pasted links and uploaded JPEG/PNG files (several at once, each through `POST /catalogue/upload-image` to the bucket), with the first as the front photo, which the export writes to Image 1. Save and Cancel are disabled during an upload or a save. **A product that isn't added leaves no photos behind:** removing a photo, Cancel, the close button or clicking outside the form call `POST /catalogue/discard-images`, and closing or reloading the page sends the same request as a beacon (best effort, and never during a save, since a leftover file is better than a product with broken photos). The route has no login, so it removes a file only when its link is in this bucket, its name is exactly what `upload_product_photo` makes, it was uploaded in the last 24 hours (`DISCARD_WINDOW`; a date in the future or one that can't exist is refused) and no product references it; one bad link refuses the whole request (422), and a storage failure is a 503 that the form shows. Pasted links are never touched.
 
+**Generate with AI** (same field) makes extra images from a photo uploaded in this form. The browser shrinks the photo under 512 x 512, the input limit of Cloudflare Workers AI, and sends it with the form's name, category, material, size and Meesho values to `POST /catalogue/generate-image`. `AIService.image_prompt` builds the prompt from those and `AIService.generate_product_image` calls the model in `CLOUDFLARE_IMAGE_MODEL`. Each image gets its own scene, or the seller's background note, and the prompt tells the model to keep the product exact. The image is stored like an upload, with `_ai_` in its file name, so Cancel and Remove clean it up too. Images are labelled AI-generated, and Regenerate replaces one in place and removes the old file. They can't be the front photo, and Save is refused if only AI images remain. A saved product keeps only links, so the `_ai_` name is what marks them later: the product drawer labels them AI-generated and offers no Set #1 (`isGeneratedImage`), and the Meesho export gate blocks a product whose Image 1 is one (`storage_service.is_generated_photo`).
+
+**Generate with AI in the product drawer** (`GenerateForProduct` in `components/ProductImagesField.jsx`) does the same for a product already in the catalogue. It works from the product's #1 photo when that's a real photo and the product has fewer than 4. The browser reads that photo from its link and shrinks it, and the prompt uses the product's stored name, category and attributes, minus legal, tax, price, weight and ID fields (`productImageFacts`). The new image is added after the product's photos; if that save fails, its file is removed from the bucket and the error is shown. There is no Regenerate in the drawer: the seller removes an image with ✕ and generates another. The server still never fetches a link: a front photo whose host doesn't let the browser read it (a pasted link to another site) gets a message to upload it as a file. A pasted link can't be a source, so the server never fetches a URL it was given.
+
 | Button / action | Handler | API call | What the backend does |
 | --- | --- | --- | --- |
 | Download template | `handleDownloadTemplate` (`page.js`) | `GET /catalogue/template` | Builds a styled multi-sheet workbook (`backend/app/services/template_generator.py`) with column guidance, sample SKUs and `CATEGORIES_INFO` (required attributes and min photos for 6 categories) |
@@ -428,6 +432,8 @@ Read by `backend/app/core/config.py` from the root `.env`. Template: `.env.examp
 | `ANTHROPIC_API_KEY`, `CLAUDE_MODEL` | none, `claude-3-5-sonnet-20241022` | Claude path |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | `""` | Photo storage; uploads and deletes fail with 503 when unset. The key stays in the backend |
 | `SUPABASE_STORAGE_BUCKET` | `product-images` | Bucket for product photos |
+| `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_AI_TOKEN` | `""` | Image generation; it fails with 503 when unset. No other provider is tried |
+| `CLOUDFLARE_IMAGE_MODEL` | `@cf/black-forest-labs/flux-2-klein-4b` | Image model. About 110 of the 10,000 free daily neurons per image (estimated from Cloudflare's price list) |
 | `REDIS_URL`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND` | `redis://localhost:6379/0` | Celery |
 | `CELERY_TASK_ALWAYS_EAGER` | `false` | Force inline tasks |
 | `AMAZON_SELLER_ID`, `AMAZON_SP_API_CLIENT_ID`, `AMAZON_SP_API_CLIENT_SECRET`, `AMAZON_SP_API_REFRESH_TOKEN` | none | All four → Amazon live mode (Settings values take priority) |
@@ -468,14 +474,15 @@ cd frontend; npm install; npm run dev        # http://localhost:3000
 | --- | --- | --- |
 | `test_catalogue_api.py` | 5 | CRUD, stats, categories |
 | `test_import_export.py` | 4 | Template, imports (a row without SKU is an error), exports |
-| `test_ai_drafts.py` | 5 | Generate + rules, edit/approve gate, preview, pre-check by marketplace |
+| `test_ai_drafts.py` | 6 | Generate + rules, edit/approve gate, preview, pre-check by marketplace, drafts deleted with the product |
 | `test_ai_groq.py` | 14 (16 cases) | Groq provider, rate-limit cooldown and waits, generation source, normalising incomplete model output, rejecting a reply with the description in the bullets, prompt asking for 90 % of each marketplace's limits, template-copy titles within the Amazon limit |
 | `test_phase2_endpoints.py` | 6 | Amazon publish/payloads, status grid, reports |
 | `test_phase3_endpoints.py` | 9 | Flipkart stub, Meesho templates/export refusal/dropdowns |
-| `test_meesho_export.py` | 73 (131 cases) | Meesho values from product data only, `Meesho <column>` values for any template, size and weight columns from one stated measurement, one Group ID per product, high-confidence dropdown matching, whole-word template matching, name matches only suggest, audience-aware suggestions, template ids and real names (incl. '/'), category defaults and product choice, taxonomy and category-default endpoints, all-or-nothing export with upload checklist, drafts marked exported, readiness and selection endpoints, approval re-checked against current data, title length, Product Name, flagged-word (incl. brand matches), price and image-link rules, copy fact check, copy style (no notes about searching, English letters), Meesho prompt, regeneration, template copy, template-required fields, processed-file parsing and import (failed drafts, learned words, unknown SKUs, unreadable files), Meesho Category from fill-in sheet and endpoint, lazy template loading, fill-in sheet, 422 endpoint |
-| `test_no_invented_data.py` | 8 | Exact header matching, no invented MRP/images, seed never overwrites, Meesho publish refused, AI and Amazon Legal Metrology from attributes only (not from draft specs) |
+| `test_meesho_export.py` | 78 (136 cases) | Meesho values from product data only, `Meesho <column>` values for any template, size and weight columns from one stated measurement, one Group ID per product, high-confidence dropdown matching, whole-word template matching, name matches only suggest, audience-aware suggestions, template ids and real names (incl. '/'), category defaults and product choice, taxonomy and category-default endpoints, all-or-nothing export with upload checklist, drafts marked exported, readiness and selection endpoints, approval re-checked against current data, title length, Product Name, flagged-word (incl. brand matches), price and image-link rules (an AI-generated image can't be Image 1, a missing MRP blocks), copy fact check, copy style (no notes about searching, English letters), Meesho prompt, regeneration, template copy, template-required fields, processed-file parsing and import (failed drafts, learned words, unknown SKUs, unreadable files), Meesho Category from fill-in sheet and endpoint, lazy template loading, fill-in sheet, 422 endpoint |
+| `test_no_invented_data.py` | 9 | Exact header matching, no invented MRP/images (import and Add Product), seed never overwrites, Meesho publish refused, AI and Amazon Legal Metrology from attributes only (not from draft specs) |
 | `test_phase4_endpoints.py` | 7 | Brand voice, banned claims, secret credentials refused (not stored unencrypted), seller ID saved, health |
 | `test_photo_storage.py` | 6 (10 cases) | Photos stored through the backend with a signed link, JPEG/PNG by content only, 10 MB limit, failing loudly when storage is unconfigured, unreachable or refuses |
+| `test_image_generation.py` | 19 (25 cases) | Prompt from the form, stored as `_ai_`, refusals, size and concurrency limits, daily limit, bad answers, storage failure, nothing leaked. Cloudflare and storage are mocked |
 | `test_photo_discard.py` | 13 (25 cases) | Only recent, unused form uploads in the seller's bucket can be removed; every refusal; storage failures |
 | `test_meesho_category_fields.py` | 4 | Add Product's field list per category, values saved with a new product |
 | `test_database_check.py` | 5 | Startup connection check and its retries |
@@ -500,6 +507,7 @@ Base URL `http://127.0.0.1:8000/api/v1` (no authentication). Routers are wired i
 | --- | --- | --- |
 | GET | `/catalogue/categories` | Distinct categories (route declared twice; the first wins) |
 | POST | `/catalogue/upload-image` | Multipart JPEG/PNG + `sku` → `{url}` (signed storage link); 422 / 503 |
+| POST | `/catalogue/generate-image` | Multipart photo under 512 x 512 + `sku`, `name`, `category`, `details`, `note`, `slot` → `{url}`; 422 / 502 / 503 |
 | POST | `/catalogue/discard-images` | Form field `urls`, at most 10 → `{removed, kept}`; 422 / 503 |
 | GET | `/catalogue/template` | Master template `.xlsx` |
 | POST | `/catalogue/import` | Multipart file → `ImportSummaryResponse` |
@@ -565,7 +573,6 @@ Also `GET /` (banner) outside `/api/v1`. The server serves no files.
 - Simulated Amazon publish fails randomly 5 % of the time (`amazon_adapter.py`).
 - The Reports tab hard-codes the rejection rate (0.0%) and the quality bars (78%, 16%, 6%), and "Flipkart Live FSNs" falls back to 4 when the real count is 0.
 - The "Approved & Live" card shows the approved count (19) above "0 live listings".
-- Catalogue rows show "1 photos" for a product with no photos.
 
 **Data written that wasn't supplied**
 
@@ -590,6 +597,13 @@ Also `GET /` (banner) outside `/api/v1`. The server serves no files.
 - Import row numbers are one too low when the template's hint row is present, and the pre-filled Brand on blank rows 3 to 15 reports each as an error.
 - Rule limits and required attributes not editable.
 - No workspaces/users, audit log, Setup wizard, login (out of scope). No Alembic migrations yet; no encrypted credential store (secrets stay in `.env`, the settings form refuses them).
+
+**AI images**
+- Generated images can change the product. In a 6-image test on 5 Nov 2026 none kept it exact: colours shifted, finishes changed, a base and other details were invented. The only safeguards are the seller's review and the on-screen warning; the spec's pixel lock and fidelity checks (`ListingPilot_PRD_SRS_v1.1.md` §10) aren't built.
+- Meesho's policy on AI images is unconfirmed.
+- `POST /catalogue/generate-image` has no login, so anyone who can reach the backend can use up the free daily quota and leave unused files in the bucket. It runs at most 2 generations at once and takes a photo of at most 1 MB. Cloudflare's free limit is the only daily cap, so a paid Workers plan would need one here.
+- At the free limit Cloudflare answers 429 (code 4006, confirmed in Cloudflare's community forum, Nov 2026). It sometimes sends that while quota remains, so the message says "Cloudflare says". Any other status shows a generic refusal.
+- The drawer's ✕ removes only the link, as for every photo there, so a removed AI image's file stays in the bucket.
 
 **Photo cleanup limits**
 - `POST /catalogue/discard-images` has no login or rate limit. Its name, age and in-use checks are the protection (§3.1).

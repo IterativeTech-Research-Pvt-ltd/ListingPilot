@@ -28,10 +28,10 @@
 
 1. **Catalogue:** import with visible row errors; real pilot data; Legal Metrology fields and Seller Details complete.
 2. **Meesho category:** the seller picks it in a 4-level picker like the supplier panel (with search), shown as `A > B > C > D`. Stored by Meesho's template id; a default per seller category, overridable per product. Name matching only suggests, never decides.
-3. **Photos:** the seller adds real photos as a link or an uploaded PNG/JPEG/JPG file. Stored in Supabase Storage. Image 1 required; images 2–4 optional. Add Product takes up to 4 and removes its uploads when the product isn't added.
+3. **Photos:** the seller adds real photos as a link or an uploaded PNG/JPEG/JPG file. Stored in Supabase Storage. Image 1 required; images 2–4 optional. Add Product takes up to 4 and removes its uploads when the product isn't added. The seller can generate extra images from a real photo (decided 5 Nov), in Add Product or the product drawer, reviewing each one and regenerating or removing it. Image 1 stays a real photo, and the export blocks an AI image there.
 4. **Copy:** AI Meesho copy within limits (prompt asks for 90 % of each limit); edit; approve.
 5. **Upload selection:** the seller adds or removes products from the current bulk upload; each shows ready / its problems.
-6. **Export gate (all-or-nothing):** the file is produced only when every selected product passes: approved draft, title ≤ 100 characters, no Meesho-flagged words, no weight/dimension/price/portal names in Product Name, Meesho Price < MRP, Wrong/Defective price < Meesho Price, every compulsory field filled with exact template values, Image 1 a usable web link (Meesho's uploader or the seller's own storage; never Drive, stock or local).
+6. **Export gate (all-or-nothing):** the file is produced only when every selected product passes: approved draft, title ≤ 100 characters, no Meesho-flagged words, no weight/dimension/price/portal names in Product Name, Meesho Price < MRP, Wrong/Defective price < Meesho Price, every compulsory field filled with exact template values, Image 1 a usable web link (Meesho's uploader or the seller's own storage; never Drive, stock or local) and a real photo, not an AI-generated image.
 7. **Images for Meesho:** signed links from the seller's bucket go straight into the image columns. Meesho accepted them on 3 Nov, so no image ZIP or paste-back is needed.
 8. **Delivery:** ZIP with one filled template per category plus an upload checklist (category path to pick per file, counts, reminder to return the processed file). Successful export marks drafts "exported", never "live".
 9. **Feedback:** import Meesho's processed file (ERROR STATUS / ERROR MESSAGE per row), store the reason on each draft, produce a correction sheet with only the failed rows.
@@ -39,14 +39,13 @@
 
 ## Out of scope (do not build)
 
-AI image generation, Shipping Optimiser, returns advisor, full Product Flags engine, template-compiler CI, audit log UI, Setup wizard, A+ publishing, auth/login, Celery progress bar, duplicate-image detection, Flipkart processed-file import, large refactors of page.js.
+Shipping Optimiser, returns advisor, full Product Flags engine, template-compiler CI, audit log UI, Setup wizard, A+ publishing, auth/login, Celery progress bar, duplicate-image detection, Flipkart processed-file import, large refactors of page.js.
 
 ## After Meesho (paused, not before the Meesho workflow is done)
 
 - Amazon: Item Highlights (≤125 chars; the 75-char title and 200-byte keyword limits are already done, 2 Nov), schema validation, validation preview, catalog search, publish, ASIN polling, price/stock update
 - Flipkart: template parser and export, FSN import, API price/stock if access is granted
 - Paid storage or image CDN, if the free tier runs out
-- Proposed, not approved: AI image generation from one seller photo for Image 2 to 4, with Generate, Regenerate and Use on each image. It stays out of scope until the seller decides timing, budget (no free API tier was found), whether seller review is enough in place of the spec's pixel checks, and Meesho's AI image policy
 - Proposed, not approved: supplier panel automation with Playwright, starting read-only (status sync, duplicate blocking, dry run) with real uploads last. Waiting on Meesho's terms for automated access
 
 ## Schedule

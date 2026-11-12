@@ -17,7 +17,9 @@ MAX_IMAGE_BYTES = 10 * 1024 * 1024  # the bucket's own limit
 SIGNED_LINK_SECONDS = 5 * 365 * 24 * 3600
 # Only a recent form upload can be discarded: this exact name, made by upload_product_photo, and still fresh.
 # The route has no login, so seeded photos (SKU_1.jpg) and anything older stay out of reach by design.
-_UPLOAD_NAME = re.compile(r"[A-Za-z0-9_-]{1,60}_([0-9]{14})_[0-9a-f]{6}\.(?:jpg|png)")
+_UPLOAD_NAME = re.compile(r"[A-Za-z0-9_-]{1,60}_([0-9]{14})(?:_ai)?_[0-9a-f]{6}\.(?:jpg|png)")
+# A generated image's name has "_ai" after the time, where no SKU can put it (a SKU may end in "_ai")
+_GENERATED_NAME = re.compile(r"_[0-9]{14}_ai_[0-9a-f]{6}\.(?:jpg|png)$")
 DISCARD_WINDOW = timedelta(hours=24)
 MAX_DISCARD = 10
 _SIGNATURES = (
@@ -44,6 +46,11 @@ def photo_type(content: bytes) -> Tuple[str, str]:
         if content.startswith(signature):
             return mime, ext
     raise PhotoRejected("Only JPEG and PNG photos are accepted. Convert the photo and upload it again.")
+
+
+def is_generated_photo(url: str) -> bool:
+    """True for a link to an AI-generated image this app stored; real photos and other links are False."""
+    return bool(_GENERATED_NAME.search(str(url).split("?", 1)[0]))
 
 
 def discardable_photo_name(url: str) -> str:
@@ -79,15 +86,16 @@ def delete_photo(name: str) -> None:
     print(f"[Storage] Removed {name}", flush=True)
 
 
-def upload_product_photo(content: bytes, sku: str) -> str:
-    """Stores the photo as '<SKU>_<time>_<id>.<ext>' and returns a signed link to it."""
+def upload_product_photo(content: bytes, sku: str, generated: bool = False) -> str:
+    """Stores the photo as '<SKU>_<time>_<id>.<ext>' ('<SKU>_<time>_ai_<id>.<ext>' when AI-generated) and returns a signed link to it."""
     mime, ext = photo_type(content)
     if not (settings.SUPABASE_URL and settings.SUPABASE_SERVICE_KEY and settings.SUPABASE_STORAGE_BUCKET):
         raise StorageUnavailable("Photo storage isn't configured (SUPABASE_URL, SUPABASE_SERVICE_KEY, SUPABASE_STORAGE_BUCKET).")
     base = settings.SUPABASE_URL.rstrip("/")
     bucket = settings.SUPABASE_STORAGE_BUCKET
     safe_sku = re.sub(r"[^A-Za-z0-9_-]", "_", sku or "product")[:60]
-    name = f"{safe_sku}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}.{ext}"
+    marker = "_ai" if generated else ""
+    name = f"{safe_sku}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}{marker}_{uuid.uuid4().hex[:6]}.{ext}"
     headers = {"Authorization": f"Bearer {settings.SUPABASE_SERVICE_KEY}", "apikey": settings.SUPABASE_SERVICE_KEY}
     try:
         with httpx.Client(timeout=60) as client:

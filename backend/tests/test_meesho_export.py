@@ -39,6 +39,10 @@ LEGAL = {
     "Importer Pincode": "641604",
 }
 
+SIGNED = "https://proj.supabase.co/storage/v1/object/sign/product-images/{}?token=t"
+REAL_PHOTO = SIGNED.format("TS-G10_20261111051232_ff04f9.jpg")
+AI_IMAGE = SIGNED.format("TS-G10_20261111051304_ai_079747.jpg")  # the marker follows the time, out of the SKU's reach
+
 
 def tshirt(sku, title, **attr_overrides):
     attrs = {
@@ -500,6 +504,20 @@ def test_readiness_and_export_check_the_selection_together():
     assert client.get("/api/v1/drafts/meesho/export?product_ids=999999").status_code == 404  # never silently dropped
 
 
+def test_a_saved_product_with_an_ai_front_photo_is_not_ready_until_a_real_photo_leads():
+    pid = _test_db_product({**tshirt("TS-AI-1", "AI photo tee"), "images": [AI_IMAGE, REAL_PHOTO]})
+    _with_meesho_draft(pid, "AI photo tee")
+    product = client.get(f"/api/v1/drafts/meesho/readiness?product_ids={pid}").json()["products"][0]
+    assert not product["ready"] and [p["field"] for p in product["problems"]] == ["Image 1 (Front)"]
+    assert client.get(f"/api/v1/drafts/meesho/export?product_ids={pid}").status_code == 422
+
+    assert client.put(f"/api/v1/catalogue/products/{pid}", json={"images": [REAL_PHOTO, AI_IMAGE]}).status_code == 200
+    res = client.get(f"/api/v1/drafts/meesho/export?product_ids={pid}")
+    assert res.status_code == 200, res.text
+    row = sheet_row(io.BytesIO(res.content))
+    assert (row["Image 1 (Front)"], row["Image 2"]) == (REAL_PHOTO, AI_IMAGE)
+
+
 def test_words_meesho_flags_block_approval():
     product = Product(sku="X", name="x", category="Bedsheets", price=100, attributes={}, images=["a"], image_count=1)
     draft = {"title": "A cotton bedsheet set", "bullets": ["CARE — machine wash"], "description": "Soft comfort."}
@@ -689,6 +707,11 @@ def test_words_meesho_flags_block_the_export():
     assert [p["field"] for p in problems] == ["Product Description"] and "'care', 'comfort'" in problems[0]["reason"]
 
 
+def test_a_product_without_mrp_is_blocked_not_filled_in():
+    assert [(p["field"], p["reason"]) for p in blocking([{**tshirt("TS-G11", "No MRP tee"), "mrp": None}])] == [
+        ("MRP", "compulsory and missing from the product's data")]
+
+
 def test_price_rules_from_the_template():
     assert [p["field"] for p in blocking([{**tshirt("TS-G6", "Priced tee"), "price": 799.0}])] == ["Meesho Price"]
     discount = "Wrong/Defective Return Discount(₹)"
@@ -710,6 +733,29 @@ def test_image_links_must_be_usable_by_meesho(link, ok):
     item["images"] = [link]
     by_sku = MeeshoAdapter.check_items([item])
     assert (not [p for p in by_sku["TS-G9"] if p["field"] == "Image 1 (Front)"]) == ok
+
+
+def test_an_ai_generated_image_cant_be_the_front_photo():
+    item = tshirt("TS-G10", "Front tee")
+    item["images"] = [AI_IMAGE, REAL_PHOTO]
+    problems = [p for p in MeeshoAdapter.check_items([item])["TS-G10"] if p["field"] == "Image 1 (Front)"]
+    assert len(problems) == 1 and "AI-generated" in problems[0]["reason"]
+
+
+def test_ai_generated_images_after_a_real_photo_are_exported():
+    item = tshirt("TS-G10", "Front tee")
+    item["images"] = [REAL_PHOTO, AI_IMAGE]
+    buf, _, _ = MeeshoAdapter.generate_batch_export([item], category_filter="Tshirts")
+    row = sheet_row(buf)
+    assert (row["Image 1 (Front)"], row["Image 2"]) == (REAL_PHOTO, AI_IMAGE)
+
+
+@pytest.mark.parametrize("name", ["KAI_AI-1_20261111051232_ff04f9.jpg", "planter_ai_20261111051232_ff04f9.jpg"])
+def test_a_real_photo_whose_sku_contains_ai_is_not_mistaken_for_one(name):
+    # Imported SKUs keep their case, so a real upload for "planter_ai" is stored under that name
+    item = tshirt("TS-G10", "Front tee")
+    item["images"] = [SIGNED.format(name)]
+    assert not [p for p in MeeshoAdapter.check_items([item])["TS-G10"] if p["field"] == "Image 1 (Front)"]
 
 
 PLANTER = "13367"  # Product Length/Breadth/Height + Product Unit (Cm, Inch...), Product Weight + Unit (G, Kg)

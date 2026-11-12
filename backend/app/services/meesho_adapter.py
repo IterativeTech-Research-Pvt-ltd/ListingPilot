@@ -27,6 +27,7 @@ from pathlib import Path
 from app.core.config import settings
 from app.services.settings_service import SettingsService, SELLER_DETAIL_FIELDS
 from app.services.marketplace_limits import title_limit
+from app.services.storage_service import is_generated_photo
 from app.models.product import Product
 from app.models.draft import ListingDraft
 
@@ -982,6 +983,8 @@ class MeeshoAdapter:
                 add(col, f"'{link[:60]}' is not a web link; use the link Meesho's Images Bulk Upload gives")
             elif bad:
                 add(col, f"{bad} link ({link[:60]}); Meesho needs the link its Images Bulk Upload gives for this photo")
+            elif col.lower().startswith("image 1") and is_generated_photo(link):
+                add(col, "Image 1 is an AI-generated image; make a real photo of the product the front photo")
         return problems
 
     @classmethod
