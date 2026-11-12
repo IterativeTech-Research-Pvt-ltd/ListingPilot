@@ -34,6 +34,15 @@ def test_import_matches_headers_exactly_and_keeps_meesho_columns_as_attributes()
     assert p["attributes"]["Group Id"] == "Group 01"
 
 
+def test_a_product_added_without_mrp_has_none():
+    # It used to be saved as price x 1.25, which Meesho's "price below MRP" check then accepted
+    res = client.post("/api/v1/catalogue/products", json={
+        "sku": "NO-MRP-1", "name": "No MRP planter", "category": "Planters", "price": 999.0})
+    assert res.status_code in (200, 201), res.text
+    assert res.json()["mrp"] is None
+    assert client.get(f"/api/v1/catalogue/products/{res.json()['id']}").json()["mrp"] is None
+
+
 def test_import_invents_no_mrp_and_blank_cells_keep_stored_values():
     gen, db = _db()
     try:

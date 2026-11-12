@@ -53,7 +53,7 @@ class CatalogueService:
             name=product_in.name,
             category=product_in.category,
             brand=product_in.brand,
-            mrp=product_in.mrp or (product_in.price * 1.25 if product_in.price else None),
+            mrp=product_in.mrp,
             price=product_in.price,
             stock=product_in.stock,
             images=product_in.images,
