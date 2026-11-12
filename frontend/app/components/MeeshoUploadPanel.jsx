@@ -42,9 +42,13 @@ async function errorText(res) {
   return (detail && detail.message) || (typeof detail === "string" ? detail : `HTTP ${res.status}`);
 }
 
+// Where each kind of problem is fixed, as the readiness check's `fix` says
+const FIX_LABELS = { draft: "Edit Meesho draft", product: "Edit product", seller: "Open Seller Details" };
+
 // One Meesho bulk upload: the seller picks which catalogue products go in it. The file is made only
 // when every picked product is ready (all or nothing); a product that isn't is fixed or taken out.
-export default function MeeshoUploadPanel({ open, onClose, notify, onExported }) {
+// onFix(row, "draft" | "product" | "seller") opens the place where that row's problems are edited.
+export default function MeeshoUploadPanel({ open, onClose, notify, onExported, onFix }) {
   const [rows, setRows] = useState(null);
   const [checkedWith, setCheckedWith] = useState("all");
   const [loadError, setLoadError] = useState("");
@@ -193,9 +197,26 @@ export default function MeeshoUploadPanel({ open, onClose, notify, onExported })
                     <div style={{ margin: "4px 0 0 34px", fontSize: "0.76rem", color: "var(--bad)" }}>{r.qc_reason}</div>
                   )}
                   {!r.ready && expanded[r.id] && (
-                    <ul style={{ margin: "6px 0 0 34px", paddingLeft: "14px", fontSize: "0.78rem", color: "var(--muted)" }}>
-                      {r.problems.map((p, i) => <li key={i}><b>{p.field}</b>: {p.reason}</li>)}
-                    </ul>
+                    <>
+                      <ul style={{ margin: "6px 0 0 34px", paddingLeft: "14px", fontSize: "0.78rem", color: "var(--muted)" }}>
+                        {r.problems.map((p, i) => <li key={i}><b>{p.field}</b>: {p.reason}</li>)}
+                      </ul>
+                      {onFix && (
+                        <div style={{ margin: "6px 0 0 34px", display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                          {Object.keys(FIX_LABELS).filter(where => r.problems.some(p => p.fix === where)).map(where => (
+                            <button
+                              key={where}
+                              type="button"
+                              className="btn btn-sm"
+                              title={r.problems.filter(p => p.fix === where).map(p => p.field).join(", ")}
+                              onClick={() => onFix(r, where)}
+                            >
+                              ✏️ {FIX_LABELS[where]}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               ))}

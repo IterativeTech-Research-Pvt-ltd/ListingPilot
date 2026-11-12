@@ -17,7 +17,7 @@ from app.services.rule_engine import RuleEngine
 from app.services.amazon_adapter import AmazonAdapter
 from app.services.flipkart_adapter import FlipkartAdapter
 from app.services.meesho_adapter import MeeshoAdapter, MeeshoExportIncomplete, MEESHO_CATEGORY_ATTR, BREADCRUMB_SEP
-from app.services.settings_service import SettingsService
+from app.services.settings_service import SettingsService, SELLER_DETAIL_FIELDS
 from app.tasks.batch_tasks import (
     generate_batch_drafts_task,
     publish_batch_drafts_task,
@@ -703,6 +703,17 @@ def export_meesho_catalog(
     )
 
 
+# Readiness problems fixed in the Meesho draft (its copy and approval); the rest are product or seller data
+DRAFT_FIELDS = ("Meesho Draft", "Product Name", "Product Description")
+
+
+def _fix_target(field: str) -> str:
+    """Where the seller fixes a readiness problem: "draft" (Meesho copy), "seller" (Seller Details) or "product"."""
+    if field in DRAFT_FIELDS:
+        return "draft"
+    return "seller" if field in SELLER_DETAIL_FIELDS else "product"
+
+
 @router.get("/meesho/readiness", summary="Whether each product of a Meesho upload passes the export's checks")
 def meesho_readiness(
     product_ids: Optional[str] = Query(None, description="Comma-separated ids of the products in this upload; all products when omitted"),
@@ -726,7 +737,7 @@ def meesho_readiness(
             "category": product.category,
             "meesho_category": tmpl["breadcrumb"] if tmpl else None,
             "ready": not problems,
-            "problems": [{"field": p["field"], "reason": p["reason"]} for p in problems],
+            "problems": [{"field": p["field"], "reason": p["reason"], "fix": _fix_target(p["field"])} for p in problems],
             # Why Meesho's QC failed it last time (from an imported processed file), until it's approved again
             "qc_reason": (item["draft"] or {}).get("rejection_reason"),
         })

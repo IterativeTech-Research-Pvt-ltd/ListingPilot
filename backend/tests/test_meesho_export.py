@@ -496,7 +496,7 @@ def test_readiness_and_export_check_the_selection_together():
     by_sku = {r["sku"]: r for r in body["products"]}
     assert (body["ready"], body["total"]) == (1, 2)
     assert by_sku["TS-RD-1"]["ready"] and by_sku["TS-RD-1"]["meesho_category"].endswith("> Tshirts")
-    assert [p["field"] for p in by_sku["TS-RD-2"]["problems"]] == ["Meesho Draft"]
+    assert [(p["field"], p["fix"]) for p in by_sku["TS-RD-2"]["problems"]] == [("Meesho Draft", "draft")]
 
     blocked = client.get(f"/api/v1/drafts/meesho/export?product_ids={ready},{unapproved}")
     assert blocked.status_code == 422 and "1 of 2 product(s)" in blocked.json()["detail"]["message"]
@@ -509,6 +509,7 @@ def test_a_saved_product_with_an_ai_front_photo_is_not_ready_until_a_real_photo_
     _with_meesho_draft(pid, "AI photo tee")
     product = client.get(f"/api/v1/drafts/meesho/readiness?product_ids={pid}").json()["products"][0]
     assert not product["ready"] and [p["field"] for p in product["problems"]] == ["Image 1 (Front)"]
+    assert product["problems"][0]["fix"] == "product"  # photos are fixed on the product, not in its draft
     assert client.get(f"/api/v1/drafts/meesho/export?product_ids={pid}").status_code == 422
 
     assert client.put(f"/api/v1/catalogue/products/{pid}", json={"images": [REAL_PHOTO, AI_IMAGE]}).status_code == 200
@@ -516,6 +517,13 @@ def test_a_saved_product_with_an_ai_front_photo_is_not_ready_until_a_real_photo_
     assert res.status_code == 200, res.text
     row = sheet_row(io.BytesIO(res.content))
     assert (row["Image 1 (Front)"], row["Image 2"]) == (REAL_PHOTO, AI_IMAGE)
+
+
+def test_each_readiness_problem_says_where_it_is_fixed():
+    from app.api.v1.endpoints.drafts import _fix_target
+    assert [_fix_target(f) for f in ("Meesho Draft", "Product Name", "Product Description")] == ["draft"] * 3
+    assert [_fix_target(f) for f in ("Manufacturer Name", "Country of Origin")] == ["seller"] * 2
+    assert [_fix_target(f) for f in ("Meesho Price", "Image 2", "Net Weight (gms)", "Template")] == ["product"] * 4
 
 
 def test_words_meesho_flags_block_approval():

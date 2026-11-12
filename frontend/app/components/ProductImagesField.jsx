@@ -10,8 +10,8 @@ const MAX_IMAGES = 4;
 const AI_INPUT_SIDE = 511;
 
 const uploadedLinks = images => images.filter(i => i.uploaded).map(i => i.url);
-// A saved product keeps only links; generated images are stored as "<SKU>_ai_<time>_<hex>" (storage_service.is_generated_photo)
-export const isGeneratedImage = url => /_ai_\d{14}_[0-9a-f]{6}\.(?:jpg|png)$/.test(String(url).split("?")[0]);
+// A saved product keeps only links; generated images are stored as "<SKU>_<time>_ai_<hex>" (storage_service.is_generated_photo)
+export const isGeneratedImage = url => /_\d{14}_ai_[0-9a-f]{6}\.(?:jpg|png)$/.test(String(url).split("?")[0]);
 // Image 1 must be a real photo, so generated images always sit after the real ones
 const realFirst = list => [...list.filter(i => !i.generated), ...list.filter(i => i.generated)];
 
@@ -21,7 +21,10 @@ async function shrinkForGeneration(file) {
   const canvas = document.createElement("canvas");
   canvas.width = Math.round(bitmap.width * scale);
   canvas.height = Math.round(bitmap.height * scale);
-  canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#fff"; // JPEG has no transparency: a cut-out PNG would otherwise turn black around the product
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   return new Promise((resolve, reject) => canvas.toBlob(
     blob => (blob ? resolve(blob) : reject(new Error("The photo couldn't be prepared."))), "image/jpeg", 0.92
   ));
@@ -44,10 +47,11 @@ async function requestGeneratedImage(photo, { sku, name, category, details, note
   return body.url;
 }
 
-// Legal, tax and price fields describe the seller or the offer, not how the product looks
-const NOT_VISUAL = /categor|manufactur|packer|importer|pincode|address|gst|hsn|country|quantity|price|mrp|weight|group|style id/i;
+// Fields that don't describe how the product looks (legal, tax, price, IDs, contacts, internal notes); they
+// stay out of the prompt, which goes to Cloudflare
+const NOT_VISUAL = /categor|manufactur|packer|importer|pincode|address|gst|hsn|country|quantity|price|mrp|cost|weight|group|style id|supplier|vendor|contact|phone|email|note|remark/i;
 
-// A saved product's facts for the image prompt, from its stored fields only
+// The facts an image prompt may use, from a product's own fields only (a saved product, or the Add Product form)
 export function productImageFacts(product) {
   return {
     name: product.name || "",
@@ -172,14 +176,22 @@ export default function ProductImagesField({ images, onChange, sku, onBusyChange
     }
     working("Generating…");
     setErrors([]);
+    // The lowest scene no kept image uses, so removing one never makes two images share a scene
+    let slot = replacing ? replacing.slot : 0;
+    while (!replacing && images.some(i => i.generated && i.slot === slot)) slot++;
     try {
-      const slot = replacing ? replacing.slot : images.filter(i => i.generated).length;
       const url = await requestGeneratedImage(source.file, { sku, ...facts, note, slot });
       const made = { url, name: "AI-generated image", uploaded: true, generated: true, slot };
       onChange(list => (replacing ? list.map(i => (i.url === replacing.url ? made : i)) : [...list, made]));
-      if (replacing) await discardUploadedImages([replacing]);
     } catch (err) {
       setErrors([`Not generated: ${err.message}`]);
+      working("");
+      return;
+    }
+    try {
+      if (replacing) await discardUploadedImages([replacing]);
+    } catch (err) {
+      setErrors([`Regenerated, but the old image is still in storage: ${err.message}`]);
     } finally {
       working("");
     }
@@ -260,6 +272,9 @@ export function GenerateForProduct({ product, onSave, notify }) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
   const images = Array.isArray(product.images) ? product.images : [];
+  // The seller can change the photos while an image is made, so the save starts from the latest list
+  const latest = useRef(images);
+  latest.current = images;
   const front = images[0];
   const blocked = !front ? "Add a real photo first; AI images are made from it."
     : isGeneratedImage(front) ? "Make a real photo #1 first; AI images are made from it."
@@ -276,6 +291,8 @@ export function GenerateForProduct({ product, onSave, notify }) {
       }, () => {
         throw new Error("The front photo couldn't be read from its link. Upload it as a file here, make it #1, and try again.");
       });
+      // shortcut: a saved product keeps only links, so the drawer can't tell which scenes its AI images used;
+      // counting them can repeat a scene after one is removed. Store the scene with the image if that matters.
       url = await requestGeneratedImage(photo, {
         sku: product.sku, ...productImageFacts(product), note, slot: images.filter(isGeneratedImage).length,
       });
@@ -285,7 +302,9 @@ export function GenerateForProduct({ product, onSave, notify }) {
       return;
     }
     try {
-      await onSave([...images, url]);
+      const current = latest.current;
+      if (current.length >= MAX_IMAGES) throw new Error(`The product reached ${MAX_IMAGES} photos while the image was made.`);
+      await onSave([...current, url]);
       notify("AI Image Added", "Compare it with the real product. If it doesn't match, remove it and generate another.", "success");
     } catch (err) {
       let leftover = "";

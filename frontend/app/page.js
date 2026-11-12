@@ -6,7 +6,7 @@ import MeeshoRequiredFields from "./components/MeeshoRequiredFields";
 import SellerDetailsCard from "./components/SellerDetailsCard";
 import MeeshoCategoryDefaults from "./components/MeeshoCategoryDefaults";
 import MeeshoUploadPanel from "./components/MeeshoUploadPanel";
-import ProductImagesField, { discardUploadedImages, isGeneratedImage, GenerateForProduct } from "./components/ProductImagesField";
+import ProductImagesField, { discardUploadedImages, isGeneratedImage, GenerateForProduct, productImageFacts } from "./components/ProductImagesField";
 import DeleteProductDialog from "./components/DeleteProductDialog";
 import MeeshoCategoryFields, { EMPTY_MEESHO_CHOICE, meeshoChoiceAttributes, meeshoChoiceIssues } from "./components/MeeshoCategoryFields";
 import RuleChecks from "./components/RuleChecks";
@@ -3918,17 +3918,11 @@ export default function ListingPilotPhase3App() {
                 sku={newForm.sku.trim().toUpperCase()}
                 onBusyChange={setIsNewImageBusy}
                 saving={isSavingNewProduct}
-                facts={{
+                facts={productImageFacts({
                   name: newForm.name,
                   category: newMeeshoChoice.breadcrumb || newForm.category,
-                  details: [
-                    newForm.material && `Material: ${newForm.material}`,
-                    newForm.size && `Size: ${newForm.size}`,
-                    ...Object.entries(meeshoChoiceAttributes(newMeeshoChoice))
-                      .filter(([key]) => key !== "Meesho Category")
-                      .map(([key, value]) => `${key.replace(/^Meesho /, "")}: ${value}`),
-                  ].filter(Boolean).join("; "),
-                }}
+                  attributes: { Material: newForm.material, Size: newForm.size, ...meeshoChoiceAttributes(newMeeshoChoice) },
+                })}
               />
 
               <div className="draft-field">
@@ -4008,7 +4002,32 @@ export default function ListingPilotPhase3App() {
         </div>
       )}
 
-      <MeeshoUploadPanel open={showMeeshoUpload} onClose={() => setShowMeeshoUpload(false)} notify={showToast} onExported={fetchAllData} />
+      <MeeshoUploadPanel
+        open={showMeeshoUpload}
+        onClose={() => setShowMeeshoUpload(false)}
+        notify={showToast}
+        onExported={fetchAllData}
+        onFix={(row, where) => {
+          const product = products.find(p => p.id === row.id);
+          if (!product && where !== "seller") {
+            showToast("Product Not Loaded", `${row.sku} isn't in the loaded catalogue; refresh the page and try again.`, "error");
+            return;
+          }
+          setShowMeeshoUpload(false);
+          if (where === "seller") {
+            setActiveTab("settings");
+            setAdminActiveSubTab("brand");
+          } else if (where === "draft") {
+            setSelectedProduct(product);
+            setSelectedDraft(drafts.find(d => d.product_id === row.id && d.marketplace === "meesho") || null);
+            setTargetMarketplace("meesho");
+            setActiveTab("drafts");
+          } else {
+            setIsEditingProduct(false); // view mode shows the Meesho required fields
+            setDrawerProduct(product);
+          }
+        }}
+      />
 
       {/* ── Meesho Category Templates & Taxonomy Modal ────────────────────── */}
       {showMeeshoTemplatesModal && (
